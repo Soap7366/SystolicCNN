@@ -14,8 +14,8 @@
 | tile_controller | `tile_controller.v` / Prep、Array、Post 独立工作，双缓冲所有权管理 |
 | line_buffer | `prep.v` / 四条行缓存，每条保存当前 Tile 所需的六列（包含 halo） |
 | 4×3 Sliding Window | `prep.v` / 四行三列移位寄存器，生成上下两个 3×3 窗口 |
-| window tile assembler | `prep.v` / 将上下窗口写入 K×8 激活缓存的两个空间列 |
-| Activation Tile Buffer | `memories.v` / 两组 144×8 INT8，按空间列分成八个 bank |
+| window tile assembler | `prep.v` / 一拍将上下两个完整 3×3 窗口写入两个空间列 |
+| Activation Tile Buffer | `memories.v` / 逻辑两组 144×8 INT8；物理按九个 tap×八个空间 lane 分 bank，每个 bank 深度 16 |
 | Weight Tile Buffer | `memories.v` + `weight_loader.v` / 8×144 INT8，当前 OC 组保持不变 |
 | Data Mapper | `data_mapper.v` / 同步读缓存、按行列编号错拍、传播 valid/last |
 | PE / Systolic Array | `mac_pe.v`、`systolic_array.v` / 64 个 output-stationary PE |
@@ -68,13 +68,19 @@ flowchart LR
 复位丢弃正在执行的任务；Feature RAM 内容不清空，必须重新启动一层。
 
 Feature RAM / 参数 ROM 在读使能有效的上升沿采样地址，沿后更新读数据。
-Prep 使用 ADDRESS → REQUEST → WAIT_RAM → STORE；地址先寄存，返回数据在后续 STORE 沿使用。
-Padding 由边界逻辑产生 0，不发越界 RAM 读取。
+Prep 在 STREAM 中连续 24 拍产生当前通道四行×六列的地址，每拍产生一个位置。
+地址及 row/col/padding/valid 先寄存；下一沿 BRAM 采样请求，同时寄存返回标签；再下一沿按标签写入行缓存。
+三者重叠，稳态每拍写一个位置；最后用两拍 DRAIN 等待在途返回写完。
+Padding 仍是有效的零数据 token，但不发越界 RAM 读取，不会误用前次 RAM 读出的旧数据。
 Weight Loader 同样把地址计算、请求和返回数据存储分开。
 
-滑窗只在 `step` 有效时更新。Assembler 接收一对窗口后，用九个周期将九个 K 位置依次写入两个 lane。
-期间滑窗保持，避免假设普通 RAM 每拍能写九个地址。
+滑窗只在 `step` 有效时更新；六列连续移入，前两列预热，随后每拍产生一对窗口，共四对。
+Assembler 将一对窗口的 18 个 INT8 同时写入独立的 tap/lane bank：每个物理 bank 每拍仍只有一个写地址。
+所有 bank 以输入通道为地址，因此无需九拍循环复制。最后一对窗口写入后才结束该通道或宣布 Prep 完成。
+每通道用 24 拍 STREAM、2 拍 DRAIN、1 拍清窗、6 拍 SHIFT、1 拍 FLUSH；每 Tile 的阶段占用为 `34*Cin+1` 拍，另一个周期用于完成握手。
 Activation Buffer 和 Weight Buffer 每个读取拍输出八个 INT8，读取延迟均为一拍。
+Mapper 在原线性 K 地址之外维护 ic/tap 计数器，满足 `k=ic*9+tap`，避免组合除以九或求余的长路径。
+激活缓存从对应 tap/ic 选择八个空间 lane 后寄存输出；阵列读接口及有效数据顺序保持一致。
 Mapper 的 valid/last 随同步读延迟走一拍，再经 lane i 的 i 拍额外错位。
 权重向右、激活向下传播，每个 PE 对齐同一 k 的操作数。
 右下 PE 的最后一次有效累加标记阵列完成；下一上升沿把全部结果快照写入 Output Buffer。
@@ -96,7 +102,7 @@ Activation full 从 Prep 完成保持到 Array 完成；Output full 从 Array �
 OC 组切换前排空当前组，因此不会用新参数处理旧输出。
 
 三级是任务级流水线，不代表三阶段都只用一拍或长期同速。
-首版串行 assembler 和单路 Post 偏重可验证性：Conv1 的 Post 较慢，Conv2/3 的 Prep 较慢。
+经过连续 BRAM 读取及并行窗口写入优化，Prep 每 Tile 为 35/273/545 拍；单路 Post 仍为 593 拍，成为当前主要吞吐限制。
 双缓冲允许阶段重叠，但不能消除持续吞吐瓶颈；不能按 64 MAC/拍推算整层实测吞吐。
 
 ## 顶层接口
@@ -147,12 +153,16 @@ array 测试检查六次 Tile、K=9/72/144、正负激活和权重。
 post 测试检查正负半值、正负饱和、零乘数、bias、池化与地址。
 layer 测试使用 0000_y0、0399_y1 两个 golden 样本；检查每个累加结果、每个输出写地址及最终 RAM 读回。
 样本 0 连续运行三层且不重装中间输入；样本 1 独立装载，反转 bank 并使用非零基地址。
-另外检查非法配置、运行中复位、busy 时重复 start/host 写入和流水重叠。
+另外检查非法配置、运行中复位（含读请求/返回同时在途）、busy 时重复 start/host 写入和流水重叠。
+还检查窗口对写入数量、连续地址 token 数量，以及 Mapper 的线性 K 与 ic/tap 一致性。
 带布线延迟仿真默认检查首个 Tile 的 16 个输出及实际 BRAM 读回；完整层正确性由上述 layer 测试覆盖。
 详细覆盖范围和已通过结果见 `docs/verification.md`。
 
 物理时序在器件上执行含 IBUF/OBUF/BUFG 的完整综合、布局、布线，20ns 时钟、0.2ns uncertainty，
 输入/输出外部预算 max=2ns、min=0.5ns，见 `constraints/core_50mhz.xdc`。
+`scripts/pre_opt.tcl` 将两块 Weight ROM BRAM 排除在自动省电使能重写之外，保留 RTL 读使能。
+这是因为一次布局结果的自动 `cooolgate` 使能逻辑在 SDF 中触发保持违例；实现脚本和 GUI impl_1 的 pre-opt hook 均应用此设置。
+所有建立/保持时序检查仍开启，没有增加 false-path 或 multicycle 例外。
 本次没有 PS 与板级引脚分配，I/O 位置由工具自动安排，仅用于完整的物理时序验证；不生成可上板 bitstream。
 未来接入 PS/AXI 时应把该模块置于系统内部，使用系统时钟、接口约束及实际板级 XDC，重新验证最终时序。
 初始 100MHz 目标未通过含 I/O 的完整时序，交付不声称支持 100MHz。

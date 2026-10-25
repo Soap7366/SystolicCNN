@@ -8,20 +8,25 @@ module data_mapper(
     output wire [7:0] rd_addr,
     input wire [63:0] act_data,weight_data,
     output wire [63:0] activations,weights,
-    output wire [7:0] av,wv,al,wl
+    output wire [7:0] av,wv,al,wl,
+    output reg [3:0] act_rd_ic,act_rd_tap
 );
     reg feeding,rv,rl;
     reg [7:0] count;
     assign rd_en=feeding;
     assign rd_addr=count;
     always @(posedge clk) begin
-        if(rst) begin feeding<=0;count<=0;rv<=0;rl<=0;end
-        else if(start) begin feeding<=1;count<=0;rv<=0;rl<=0;end
+        if(rst) begin feeding<=0;count<=0;rv<=0;rl<=0;act_rd_ic<=0;act_rd_tap<=0;end
+        else if(start) begin feeding<=1;count<=0;rv<=0;rl<=0;act_rd_ic<=0;act_rd_tap<=0;end
         else begin
             rv<=rd_en; rl<=rd_en && count==k_count-1;
             if(feeding) begin
                 if(count==k_count-1) feeding<=0;
-                else count<=count+1'b1;
+                else begin
+                    count<=count+1'b1;
+                    if(act_rd_tap==8) begin act_rd_tap<=0;act_rd_ic<=act_rd_ic+1'b1;end
+                    else act_rd_tap<=act_rd_tap+1'b1;
+                end
             end
         end
     end

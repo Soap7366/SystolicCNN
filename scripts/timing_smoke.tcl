@@ -12,12 +12,18 @@ set golden [split [string trim [read $f]] \n]
 close $f
 array set seen {}
 set writes 0
+# Observe the actual destination RAM write enable, rather than a synthesis
+# temporary post_n_XX name that can change after implementation optimization.
+set write_enable ""
+foreach obj [get_objects /tb_timing/dut/*] {
+    if {[regexp {feature_memories\[1\]\.wr\s*$} $obj]} {set write_enable $obj}
+}
+if {$write_enable eq ""} {error "Destination BRAM write enable is not observable"}
+puts "SMOKE write-enable signal=$write_enable"
 # Sample at external rising edge +19 ns, after routed combinational settling.
 run 9 ns
 for {set cycle 0} {$cycle < 3000} {incr cycle} {
-    # post_n_22 is the routed WRITE-state decode (also gated by layer busy).
-    # The synthesized wire named post/state is the D bus, not the state Q.
-    if {[get_value /tb_timing/dut/post_n_22] eq "1"} {
+    if {[get_value $write_enable] eq "1"} {
         set addr [get_value -radix unsigned /tb_timing/dut/output_addr]
         set value [get_value -radix hex /tb_timing/dut/output_data]
         set oc [expr {$writes / 2}]

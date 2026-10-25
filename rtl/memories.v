@@ -37,25 +37,32 @@ module weight_tile_buffer(
 endmodule
 
 module activation_tile_buffer(
-    input wire clk,wr_en,wr_bank,input wire [7:0] wr_k,
-    input wire [2:0] wr_p,input wire [7:0] wr_top,wr_bottom,
-    input wire rd_en,rd_bank,input wire [7:0] rd_addr,
-    output wire [63:0] rd_data
+    input wire clk,wr_en,wr_bank,input wire [3:0] wr_ic,
+    input wire [2:0] wr_p,input wire [71:0] wr_top,wr_bottom,
+    input wire rd_en,rd_bank,input wire [3:0] rd_ic,rd_tap,
+    output reg [63:0] rd_data
 );
-    genvar i;
-    generate for(i=0;i<8;i=i+1) begin: lanes
-        (* ram_style="distributed" *) reg [7:0] bank0[0:143];
-        (* ram_style="distributed" *) reg [7:0] bank1[0:143];
-        reg [7:0] q0,q1;
-        wire we=wr_en && (wr_p==i || wr_p+3'd2==i);
-        wire [7:0] d=(wr_p==i)?wr_top:wr_bottom;
-        always @(posedge clk) begin
-            if(we && !wr_bank) bank0[wr_k]<=d;
-            if(we && wr_bank) bank1[wr_k]<=d;
-            if(rd_en) begin q0<=bank0[rd_addr];q1<=bank1[rd_addr];end
+    // Bank by kernel tap AND spatial lane; the remaining depth is Cin<=16.
+    // A window pair writes 18 independent banks in one cycle. Logical data
+    // order is still X[k=ic*9+tap][lane], with the same one-cycle read interface.
+    wire [575:0] taps0,taps1;
+    genvar tap,lane;
+    generate for(tap=0;tap<9;tap=tap+1) begin: taps
+        for(lane=0;lane<8;lane=lane+1) begin: lanes
+            (* ram_style="distributed" *) reg [7:0] bank0[0:15];
+            (* ram_style="distributed" *) reg [7:0] bank1[0:15];
+            wire we=wr_en && (wr_p==lane || wr_p+3'd2==lane);
+            wire [7:0] d=(wr_p==lane)?wr_top[tap*8+:8]:wr_bottom[tap*8+:8];
+            always @(posedge clk) begin
+                if(we && !wr_bank) bank0[wr_ic]<=d;
+                if(we && wr_bank) bank1[wr_ic]<=d;
+            end
+            assign taps0[tap*64+lane*8+:8]=bank0[rd_ic];
+            assign taps1[tap*64+lane*8+:8]=bank1[rd_ic];
         end
-        assign rd_data[i*8+:8]=rd_bank?q1:q0;
     end endgenerate
+    always @(posedge clk) if(rd_en)
+        rd_data<=rd_bank?taps1[rd_tap*64+:64]:taps0[rd_tap*64+:64];
 endmodule
 
 module output_tile_buffer(

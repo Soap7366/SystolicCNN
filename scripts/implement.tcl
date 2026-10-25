@@ -8,6 +8,7 @@ report_utilization -file build/utilization_synth.rpt
 report_timing_summary -delay_type min_max -report_unconstrained -file build/timing_synth.rpt
 report_timing -max_paths 20 -file build/paths_synth.rpt
 write_checkpoint -force build/cnn_synth.dcp
+source scripts/pre_opt.tcl
 opt_design
 place_design
 phys_opt_design

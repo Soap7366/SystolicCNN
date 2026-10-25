@@ -20,6 +20,7 @@ module tb_layer #(parameter DATA_DIR="data");
     integer profiled_cycles,param_cycles,weight_cycles,active_prep,active_array,active_post;
     integer prep_bank_wait,array_output_wait,array_input_wait,post_input_wait;
     integer mapper_feed_cycles,prep_tiles,array_tiles,post_tiles,occ,profile_j;
+    integer prep_address_slots,feature_reads,window_pair_writes;
     integer occupancy[0:7],prep_states[0:7],post_states[0:10];
     integer oc,p,yy,xx,idx;
     bit checking=0;
@@ -35,6 +36,11 @@ module tb_layer #(parameter DATA_DIR="data");
             if(dut.scheduler.array_active) active_array=active_array+1;
             if(dut.scheduler.post_active) active_post=active_post+1;
             if(dut.mapper.feeding) mapper_feed_cycles=mapper_feed_cycles+1;
+            if(dut.prep.state==1) prep_address_slots=prep_address_slots+1;
+            if(dut.feature_en) feature_reads=feature_reads+1;
+            if(dut.act_wr) window_pair_writes=window_pair_writes+1;
+            if(dut.tile_rd && dut.act_rd_ic*9+dut.act_rd_tap!=dut.tile_addr)
+                $fatal(1,"activation/weight read index disagreement");
             if(dut.scheduler.prep_done) prep_tiles=prep_tiles+1;
             if(dut.scheduler.array_done) array_tiles=array_tiles+1;
             if(dut.scheduler.post_done) post_tiles=post_tiles+1;
@@ -117,6 +123,17 @@ module tb_layer #(parameter DATA_DIR="data");
         repeat(700) @(negedge clk);rst=1;
         repeat(4) @(negedge clk);rst=0;
         if(busy) $fatal(1,"reset did not abort layer");
+        // Abort with actual BRAM requests and tagged return data in flight.
+        @(negedge clk);start=1;@(negedge clk);start=0;
+        cycles=0;
+        while(!(dut.feature_en && dut.prep.ret_valid && !dut.prep.ret_padding) && cycles<2000) begin
+            @(negedge clk);cycles=cycles+1;
+        end
+        if(cycles==2000) $fatal(1,"did not reach a live Prep read pipeline");
+        rst=1;repeat(4) @(negedge clk);
+        if(busy || dut.prep.req_valid || dut.prep.ret_valid || dut.feature_en || dut.act_wr)
+            $fatal(1,"reset did not drain/kill Prep transactions");
+        rst=0;
         for(sample=0;sample<2;sample=sample+1) begin
             for(layer=1;layer<=3;layer=layer+1) begin
                 configure(layer,sample);
@@ -131,6 +148,7 @@ module tb_layer #(parameter DATA_DIR="data");
                 profiled_cycles=0;param_cycles=0;weight_cycles=0;active_prep=0;active_array=0;active_post=0;
                 prep_bank_wait=0;array_output_wait=0;array_input_wait=0;post_input_wait=0;
                 mapper_feed_cycles=0;prep_tiles=0;array_tiles=0;post_tiles=0;
+                prep_address_slots=0;feature_reads=0;window_pair_writes=0;
                 for(profile_j=0;profile_j<8;profile_j=profile_j+1) begin occupancy[profile_j]=0;prep_states[profile_j]=0;end
                 for(profile_j=0;profile_j<11;profile_j=profile_j+1) post_states[profile_j]=0;
                 checking=1;
@@ -146,6 +164,8 @@ module tb_layer #(parameter DATA_DIR="data");
                 checking=0;
                 while(!host_ready) @(negedge clk);
                 if(acc_count!=nacc || out_count!=nout) $fatal(1,"incomplete coverage acc=%0d/%0d out=%0d/%0d",acc_count,nacc,out_count,nout);
+                if(prep_address_slots!=prep_tiles*ci*24 || window_pair_writes!=prep_tiles*ci*4)
+                    $fatal(1,"incomplete parallel window/stream coverage");
                 if(prep_array_overlap==0 || prep_post_overlap==0) $fatal(1,"independent pipeline stages never overlapped");
                 total_triple=total_triple+overlap;
                 for(i=0;i<nout;i=i+1) begin
@@ -156,8 +176,9 @@ module tb_layer #(parameter DATA_DIR="data");
                 @(negedge clk);host_rd_en=0;
                 $display("PASS sample=%0d layer=%0d acc=%0d pool=%0d cycles=%0d triple_overlap=%0d prep_array=%0d prep_post=%0d",sample,layer,acc_count,out_count,cycles,overlap,prep_array_overlap,prep_post_overlap);
                 $display("PROFILE sample=%0d layer=%0d total=%0d setup=%0d weight_loader=%0d prep_active=%0d array_active=%0d mapper_feed=%0d post_active=%0d prep_bank_wait=%0d array_output_wait=%0d array_input_wait=%0d post_input_wait=%0d prep_tiles=%0d array_tiles=%0d post_tiles=%0d",sample,layer,profiled_cycles,param_cycles,weight_cycles,active_prep,active_array,mapper_feed_cycles,active_post,prep_bank_wait,array_output_wait,array_input_wait,post_input_wait,prep_tiles,array_tiles,post_tiles);
+                $display("PROFILE_STREAM sample=%0d layer=%0d address_slots=%0d actual_bram_reads=%0d window_pair_writes=%0d",sample,layer,prep_address_slots,feature_reads,window_pair_writes);
                 $display("PROFILE_OCC sample=%0d layer=%0d none=%0d prep=%0d array=%0d prep_array=%0d post=%0d prep_post=%0d array_post=%0d all=%0d",sample,layer,occupancy[0],occupancy[1],occupancy[2],occupancy[3],occupancy[4],occupancy[5],occupancy[6],occupancy[7]);
-                $display("PROFILE_PREP sample=%0d layer=%0d idle=%0d request=%0d wait_ram=%0d store=%0d clear_window=%0d shift=%0d wait_window=%0d address=%0d",sample,layer,prep_states[0],prep_states[1],prep_states[2],prep_states[3],prep_states[4],prep_states[5],prep_states[6],prep_states[7]);
+                $display("PROFILE_PREP sample=%0d layer=%0d idle=%0d stream=%0d drain=%0d clear_window=%0d shift=%0d flush=%0d",sample,layer,prep_states[0],prep_states[1],prep_states[2],prep_states[3],prep_states[4],prep_states[5]);
                 $display("PROFILE_POST sample=%0d layer=%0d idle=%0d read=%0d wait_ram=%0d add=%0d mult=%0d round=%0d pool=%0d write=%0d abs=%0d clamp=%0d relu=%0d",sample,layer,post_states[0],post_states[1],post_states[2],post_states[3],post_states[4],post_states[5],post_states[6],post_states[7],post_states[8],post_states[9],post_states[10]);
             end
         end

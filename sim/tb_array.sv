@@ -6,7 +6,8 @@ module tb_array;
     reg signed [7:0] x[0:143][0:7],wref[0:7][0:143];
     wire [63:0] a,w;wire [7:0] av,wv,al,wl;
     wire [2047:0] results;wire done;
-    data_mapper mapper(clk,rst,start,k_count,re,addr,ad,wd,a,w,av,wv,al,wl);
+    data_mapper mapper(.clk(clk),.rst(rst),.start(start),.k_count(k_count),.rd_en(re),.rd_addr(addr),
+        .act_data(ad),.weight_data(wd),.activations(a),.weights(w),.av(av),.wv(wv),.al(al),.wl(wl));
     systolic_array array(clk,rst,start,a,w,av,wv,al,wl,results,done);
     integer i,j,k,t,cycles;reg signed [31:0] expected;
     always @(posedge clk) if(re) begin

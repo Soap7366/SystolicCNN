@@ -1,6 +1,6 @@
 # 验证记录
 
-环境：Vivado / XSim 2023.2，xc7z020clg400-1，2026-10-25。
+环境：Vivado / XSim 2023.2，xc7z020clg400-1。当前 Prep 优化验证更新于 2026-10-26。
 实现入口为 `rtl/cnn_layer_accelerator.v`；工程为根目录 `CNN_Accelerator.xpr`。
 
 ## 整数功能仿真
@@ -20,13 +20,15 @@
 
 | 层 | 输入通道→输出通道 | 单层周期 | 50 MHz 对应计算时间 |
 |---|---|---:|---:|
-| Conv1 | 1→8 | 304,622 | 6.09244 ms |
-| Conv2 | 8→16 | 311,696 | 6.23392 ms |
-| Conv3 | 16→32 | 326,976 | 6.53952 ms |
+| Conv1 | 1→8 | 304,507 | 6.09014 ms |
+| Conv2 | 8→16 | 157,456 | 3.14912 ms |
+| Conv3 | 16→32 | 97,408 | 1.94816 ms |
 
 周期包含引擎内部参数加载与最终写回，不包含 host 输入装载、host 结果读回、GAP、FC。
-这不是完整模型端到端帧率。Conv1 检测到 Prep/Array/Post 三阶段同时运行；各层均有 Prep/Array 和 Prep/Post 重叠。
-当前串行准备和后处理限制吞吐，64 个 PE 并非每周期都有效计算。
+三层合计 559,371 拍，按 50 MHz 为 11.18742 ms。这不是完整模型端到端帧率。
+三层均检测到 Prep/Array/Post 同时运行；当前主要受单路后处理限制，64 个 PE 并非每周期都有效计算。
+2026-10-26 的 Prep 优化已通过两个样本的全部逐层整数检查，另增加了实际读请求/返回在途复位、窗口对写入数量、Mapper ic/tap 对齐检查。
+优化前后周期及逐状态对比见 `docs/timing_breakdown.md`。
 
 ## 布局布线静态时序
 
@@ -37,8 +39,8 @@
 | 指标 | 结果 |
 |---|---:|
 | 工作频率 | 50 MHz |
-| 最差建立裕量 WNS | +2.892 ns |
-| 最差保持裕量 WHS | +0.049 ns |
+| 最差建立裕量 WNS | +3.857 ns |
+| 最差保持裕量 WHS | +0.050 ns |
 | 最差脉宽裕量 | +8.750 ns |
 | 建立 / 保持违例端点 | 0 / 0 |
 | 无时钟 / 未约束内部端点 | 0 / 0 |
@@ -47,13 +49,17 @@
 依据：`build/timing_route.rpt`、`build/implementation_status.txt`。
 100 MHz 未通过完整 I/O 时序，不作为交付频率。
 
-最终布线资源：9,125 LUT、8,655 寄存器、7 个 BRAM Tile（6×RAMB36 + 2×RAMB18）、4 DSP、1 BUFG。
+当前布线资源：9,627 LUT、8,507 寄存器、7 个 BRAM Tile（6×RAMB36 + 2×RAMB18）、4 DSP、1 BUFG。
+相对优化前增加 502 LUT，减少 148 寄存器，BRAM/DSP 数量不变。逻辑存储容量没有增加。
+最终实现通过 `scripts/pre_opt.tcl` 保留权重 ROM 原始使能，避免自动 BRAM 省电改写产生的 SDF 保持违例；
+GUI impl_1 和命令行实现都应用该设置，未增加时序例外。相关工具设置参考 [AMD set_power_opt](https://docs.amd.com/r/en-US/ug904-vivado-implementation/power_opt_design?contentId=P_h3wRukZWPi5GyicDD31g)。
 PE 乘法当前由综合器映射到 LUT；4 个 DSP 用于后处理乘法。详见 `build/utilization_route.rpt`。
 
 ## 带布线延迟仿真方法
 
-结果：**PASS**。最大延迟 SDF 回标成功，Conv1 首 Tile 的 16 个池化值、写地址及实际 BRAM 读回全部与 golden 一致，
-完整运行日志中未出现 setup/hold/recovery 时序违例。还验证了同步复位中止任务后，Feature BRAM 内容保持可读。
+当前优化版结果：**PASS（2026-10-26）**。排除自动 ROM 省电使能改写后，最终最大延迟 SDF 回标成功；
+Conv1 首 Tile 的 16 个池化值、写地址和实际 BRAM 读回均与 golden 一致，整个最终运行日志中没有 setup/hold/recovery 时序违例。
+同步复位中止任务后，Feature BRAM 内容保持可读。首次带告警的中间记录保存在 `build/timing_smoke_before_rom_power_fix.log`，不计入通过结果。
 依据：`build/xelab_timing.log`、`build/xsim_timing_smoke.log`。
 
 `scripts/run_timing_sim.ps1` 使用 `build/cnn_timesim.v` 和 `build/cnn_timesim.sdf`，
@@ -62,7 +68,7 @@ PE 乘法当前由综合器映射到 LUT；4 个 DSP 用于后处理乘法。详
 默认运行首个 Tile 的动态延迟检查：通过 host 装载前三行所需输入，启动完整层配置，
 核对首个 Tile 的 16 次池化写回，再同步复位中止剩余计算，通过 host 读回这 16 个实际 BRAM 字节。
 `timing_smoke.tcl` 只跳过 testbench 中不需要的后续输入装载，不强制 DUT 状态或 RAM。
-该脚本监视当前布线网表的写使能 `post_n_22`；若修改 RTL 或重新优化导致网名变化，需更新此观测点。
+该脚本查找目的 Feature BRAM 的实际写使能 `feature_memories[1].wr`，避免依赖不稳定的综合临时网名。
 完整层整数一致性由 `tb_layer` 的六次完整层运行覆盖；本次不把首 Tile SDF 检查称为完整层门级仿真。
 可添加 `-FullLayer` 参数运行完整 Conv1 门级仿真与 8,192 字节读回，耗时较长；该项未完成，不计入已通过结果。
 输入在外部时钟上升沿后 1 ns 驱动，符合 XDC 的 0.5～2 ns 输入延迟范围；

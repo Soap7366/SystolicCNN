@@ -1,4 +1,42 @@
-# 单层引擎逐阶段时钟剖析
+# Prep 优化前后逐阶段时钟剖析
+
+## 当前实现：连续 BRAM 请求与并行窗口写入
+
+2026-10-26：对行缓存装载采用地址、同步读、带标签返回写入三级流水；
+Activation Tile Buffer 改为九个 tap×八个空间 lane 分 bank，一拍写上下两个完整窗口。
+以下时间均由 XSim 周期按 **50 MHz / 20 ns** 折算，不含 host 装载/读回和 GAP/FC。
+两个 golden 样本的六次完整层仿真均通过；在途读请求复位、窗口写入数量和 Mapper ic/tap 对齐检查通过。
+
+| 层 | 优化前 Prep/Tile | 优化后 Prep/Tile | 优化前整层 | 优化后整层 |
+|---|---:|---:|---:|---:|
+| Conv1 | 150 拍 | **35 拍** | 6.09244 ms | **6.09014 ms** |
+| Conv2 | 1193 拍 | **273 拍** | 6.23392 ms | **3.14912 ms** |
+| Conv3 | 2385 拍 | **545 拍** | 6.53952 ms | **1.94816 ms** |
+| 三层合计 | — | — | 18.86588 ms | **11.18742 ms** |
+
+三层总周期由 **943,294** 降至 **559,371**，总耗时减少约 **40.7%**，速度为原来的 **1.69 倍**。
+Conv1 的单路后处理未改，因而整层改善很小；Conv2、Conv3 的输入准备等待显著减少。
+优化后已重新布局布线：50 MHz 下 WNS=+3.857 ns、WHS=+0.050 ns，无建立/保持违例。
+资源为 9,627 LUT、8,507 FF、7 BRAM Tile、4 DSP；相对基线增加 502 LUT，BRAM/DSP 数量不变。
+
+| 当前阶段累计工作时间 | Conv1 | Conv2 | Conv3 | 合计 |
+|---|---:|---:|---:|---:|
+| 参数加载/握手 | 0.00630 ms | 0.09324 ms | 0.37080 ms | 0.47034 ms |
+| Prep | 0.35840 ms | 1.39776 ms | 1.39520 ms | **3.15136 ms** |
+| Array | 0.26624 ms | 0.45568 ms | 0.41216 ms | 1.13408 ms |
+| Mapper 喂数（Array 的子集） | 0.09216 ms | 0.36864 ms | 0.36864 ms | 0.82944 ms |
+| Post | 6.07232 ms | 3.03616 ms | 1.51808 ms | 10.62656 ms |
+
+三个阶段可同时工作，累计忙碌时间不能相加作为层总耗时。当前三层均受到单路 Post 限制，Conv3 的 Prep 和 Post 耗时已较接近。
+每个通道的准备阶段为：24 拍 STREAM 产生地址，2 拍 DRAIN 排空返回，1 拍清窗，6 拍连续移位，1 拍 FLUSH 提交最后一对窗口。
+因此加上一拍完成握手，每 Tile 为 **34×Cin+1 拍**；九拍串行窗口复制已消除。
+激活双缓冲逻辑容量仍为两组 144×8 INT8，物理划分改变；对阵列仍提供一拍延迟、每拍八个 INT8 的读取接口。
+Mapper 有效喂数占整层总周期从约 4.40% 提升到 **7.41%**，后续主要瓶颈已转到 Post。
+
+当前原始数据见 `build/xsim_layer.log` 中的 `PROFILE`、`PROFILE_STREAM`、`PROFILE_OCC`、`PROFILE_PREP`、`PROFILE_POST`。
+优化前原始记录保存在 `build/before_prep_optimization/`。
+
+## 优化前剖析（历史数据）
 
 测量环境：Vivado XSim 行为仿真，`tb_layer.sv` 对控制器和阶段状态每拍计数。
 两份 golden 样本的所有计数相同，且完整层的整数结果、地址、BRAM 读回继续通过。
@@ -44,4 +82,4 @@ Conv2、Conv3 中 Array 等待准备好的激活 Tile 分别达到 **5.61192 ms*
 三层 Mapper 真正向阵列喂入 K 数据共 **41,472 拍 = 0.82944 ms**，占三层总 **943,294 拍 = 18.86588 ms** 的 **4.40%**。
 这对应先前的有效 MAC 吞吐率；它是整个流水线的负载比例，不是所有 PE 的逐拍活动率或 FPGA 面积占用率。
 
-原始逐拍计数见 `build/xsim_layer.log` 中的 `PROFILE`、`PROFILE_OCC`、`PROFILE_PREP`、`PROFILE_POST` 行。
+优化前原始逐拍计数见 `build/before_prep_optimization/xsim_layer.log` 中的 `PROFILE`、`PROFILE_OCC`、`PROFILE_PREP`、`PROFILE_POST` 行。
