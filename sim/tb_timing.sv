@@ -24,7 +24,10 @@ module tb_timing;
         repeat(30) tick;rst=0;
         while(host_ready!==1'b1) tick;
         for(i=0;i<4096;i=i+1) begin
-            tick;host_wr_en=1;host_addr=i;host_wr_data=inputs[i];
+            // Guard address/data for one cycle before and after the write strobe.
+            tick;host_wr_en=0;host_addr=i;host_wr_data=inputs[i];
+            tick;host_wr_en=1;
+            tick;host_wr_en=0;
         end
         tick;host_wr_en=0;
         tick;start=1;

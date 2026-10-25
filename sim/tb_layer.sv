@@ -45,7 +45,17 @@ module tb_layer #(parameter DATA_DIR="data");
             if(dut.scheduler.array_done) array_tiles=array_tiles+1;
             if(dut.scheduler.post_done) post_tiles=post_tiles+1;
             if(dut.scheduler.prep_active) prep_states[dut.prep.state]=prep_states[dut.prep.state]+1;
-            if(dut.scheduler.post_active) post_states[dut.post.state]=post_states[dut.post.state]+1;
+            if(dut.scheduler.post_active) begin
+                if(dut.post.rd_en) post_states[0]=post_states[0]+1;
+                if(dut.post.read_valid) post_states[1]=post_states[1]+1;
+                if(dut.post.acc_valid) post_states[2]=post_states[2]+1;
+                if(dut.post.prod_valid) post_states[3]=post_states[3]+1;
+                if(dut.post.abs_valid) post_states[4]=post_states[4]+1;
+                if(dut.post.round_valid) post_states[5]=post_states[5]+1;
+                if(dut.post.quant_valid) post_states[6]=post_states[6]+1;
+                if(dut.post.relu_valid) post_states[7]=post_states[7]+1;
+                if(dut.post.wr_en) post_states[8]=post_states[8]+1;
+            end
             if(dut.controller.state==4) begin
                 occ=(dut.scheduler.prep_active?1:0)+(dut.scheduler.array_active?2:0)+(dut.scheduler.post_active?4:0);
                 occupancy[occ]=occupancy[occ]+1;
@@ -166,6 +176,9 @@ module tb_layer #(parameter DATA_DIR="data");
                 if(acc_count!=nacc || out_count!=nout) $fatal(1,"incomplete coverage acc=%0d/%0d out=%0d/%0d",acc_count,nacc,out_count,nout);
                 if(prep_address_slots!=prep_tiles*ci*24 || window_pair_writes!=prep_tiles*ci*4)
                     $fatal(1,"incomplete parallel window/stream coverage");
+                for(profile_j=0;profile_j<8;profile_j=profile_j+1)
+                    if(post_states[profile_j]!=nacc) $fatal(1,"Post pipeline token count mismatch stage=%0d",profile_j);
+                if(post_states[8]!=nout) $fatal(1,"Post pipeline write count mismatch");
                 if(prep_array_overlap==0 || prep_post_overlap==0) $fatal(1,"independent pipeline stages never overlapped");
                 total_triple=total_triple+overlap;
                 for(i=0;i<nout;i=i+1) begin
@@ -179,7 +192,7 @@ module tb_layer #(parameter DATA_DIR="data");
                 $display("PROFILE_STREAM sample=%0d layer=%0d address_slots=%0d actual_bram_reads=%0d window_pair_writes=%0d",sample,layer,prep_address_slots,feature_reads,window_pair_writes);
                 $display("PROFILE_OCC sample=%0d layer=%0d none=%0d prep=%0d array=%0d prep_array=%0d post=%0d prep_post=%0d array_post=%0d all=%0d",sample,layer,occupancy[0],occupancy[1],occupancy[2],occupancy[3],occupancy[4],occupancy[5],occupancy[6],occupancy[7]);
                 $display("PROFILE_PREP sample=%0d layer=%0d idle=%0d stream=%0d drain=%0d clear_window=%0d shift=%0d flush=%0d",sample,layer,prep_states[0],prep_states[1],prep_states[2],prep_states[3],prep_states[4],prep_states[5]);
-                $display("PROFILE_POST sample=%0d layer=%0d idle=%0d read=%0d wait_ram=%0d add=%0d mult=%0d round=%0d pool=%0d write=%0d abs=%0d clamp=%0d relu=%0d",sample,layer,post_states[0],post_states[1],post_states[2],post_states[3],post_states[4],post_states[5],post_states[6],post_states[7],post_states[8],post_states[9],post_states[10]);
+                $display("PROFILE_POST sample=%0d layer=%0d read_request=%0d read_return=%0d bias=%0d multiply=%0d absolute=%0d rounded=%0d quantized=%0d relu_pool=%0d write=%0d",sample,layer,post_states[0],post_states[1],post_states[2],post_states[3],post_states[4],post_states[5],post_states[6],post_states[7],post_states[8]);
             end
         end
         if(total_triple==0) $fatal(1,"no three-stage overlap across suite");

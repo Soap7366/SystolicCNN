@@ -8,17 +8,24 @@ module post_processing(
     output reg done,
     output wire debug_valid,output wire signed [31:0] debug_acc,output wire [5:0] debug_index
 );
-    localparam IDLE=0,READ=1,WAIT_RAM=2,ADD=3,MULT=4,ROUND=5,POOL=6,WRITE=7,ABS=8,CLAMP=9,RELU=10;
-    reg [3:0] state;reg [5:0] index;
-    reg [6:0] x,y;reg [7:0] max_value,pool_value,q;
-    reg signed [31:0] acc;
+    // One INT32 read request per cycle. Each valid token carries its channel,
+    // spatial index, parameter values and final write address through the pipe.
+    reg active,feeding;reg [5:0] index;
+    reg [6:0] x,y;
+    reg read_valid,acc_valid,prod_valid,abs_valid,round_valid,quant_valid,relu_valid,write_valid;
+    reg [5:0] read_index,acc_index,prod_index,abs_index,round_index,quant_index,relu_index;
+    reg [12:0] read_address,acc_address,prod_address,abs_address,round_address,quant_address,relu_address;
+    reg signed [31:0] read_bias,read_mult,acc_mult,acc;
     reg signed [63:0] product;
     reg [63:0] magnitude;
     reg [33:0] rounded;
+    reg abs_negative,round_negative;
+    reg [7:0] q,relu_q,max_value,pool_value;
+    reg write_last;
     wire signed [31:0] selected_bias=biases[index[5:3]*32+:32];
     wire signed [31:0] selected_mult=multipliers[index[5:3]*32+:32];
-    assign rd_en=state==READ;assign rd_addr=index;
-    assign wr_en=state==WRITE;assign wr_data=pool_value;
+    assign rd_en=feeding && !rst;assign rd_addr=index;
+    assign wr_en=write_valid && !rst;assign wr_data=pool_value;
     wire [12:0] oc={7'd0,oc_base}+index[5:3];
     reg [12:0] channel_offset,row_offset;
     always @* begin
@@ -28,44 +35,68 @@ module post_processing(
             default:begin channel_offset=oc<<6;row_offset={7'd0,y[6:1]}<<3;end
         endcase
     end
-    assign debug_valid=state==MULT;assign debug_acc=acc;assign debug_index=index;
+    assign debug_valid=acc_valid;assign debug_acc=acc;assign debug_index=acc_index;
     always @(posedge clk) begin
-        if(rst) begin state<=IDLE;done<=0;index<=0;x<=0;y<=0;max_value<=0;pool_value<=0;q<=0;acc<=0;product<=0;magnitude<=0;rounded<=0;wr_addr<=0;end
+        if(rst) begin
+            active<=0;feeding<=0;done<=0;index<=0;x<=0;y<=0;
+            read_valid<=0;acc_valid<=0;prod_valid<=0;abs_valid<=0;round_valid<=0;quant_valid<=0;relu_valid<=0;write_valid<=0;
+            read_index<=0;acc_index<=0;prod_index<=0;abs_index<=0;round_index<=0;quant_index<=0;relu_index<=0;
+            read_address<=0;acc_address<=0;prod_address<=0;abs_address<=0;round_address<=0;quant_address<=0;relu_address<=0;
+            read_bias<=0;read_mult<=0;acc_mult<=0;acc<=0;product<=0;magnitude<=0;rounded<=0;
+            abs_negative<=0;round_negative<=0;q<=0;relu_q<=0;max_value<=0;pool_value<=0;wr_addr<=0;write_last<=0;
+        end
         else begin
             done<=0;
-            case(state)
-                IDLE:if(start) begin index<=0;x<=tile_x;y<=tile_y;max_value<=0;state<=READ;end
-                READ:state<=WAIT_RAM;
-                WAIT_RAM:state<=ADD;
-                ADD:begin
-                    acc<=rd_data+selected_bias;
-                    wr_addr<=output_base+channel_offset+row_offset+(x>>1)+index[2];
-                    state<=MULT;
-                end
-                MULT:begin product<=acc*selected_mult;state<=ABS;end
-                ABS:begin magnitude<=product[63]?(~product+64'd1):product;state<=ROUND;end
-                // Equivalent to (abs(product)+2^30)>>31 without a 64-bit adder.
-                ROUND:begin rounded<={1'b0,magnitude[63:31]}+magnitude[30];state<=CLAMP;end
-                CLAMP:begin
-                    if(rounded>127) q<=product[63]?8'h81:8'h7f;
-                    else q<=product[63]?(~rounded[7:0]+8'd1):rounded[7:0];
-                    state<=RELU;
-                end
-                RELU:begin if(q[7]) q<=0;state<=POOL;end
-                POOL:begin
-                    if(index[1:0]==3) begin
-                        pool_value<=q>max_value?q:max_value;max_value<=0;state<=WRITE;
-                    end else begin
-                        if(q>max_value) max_value<=q;
-                        index<=index+1'b1;state<=READ;
-                    end
-                end
-                WRITE:begin
-                    if(index==63) begin state<=IDLE;done<=1;end
-                    else begin index<=index+1'b1;state<=READ;end
-                end
-                default:state<=IDLE;
-            endcase
+            read_valid<=rd_en;
+            acc_valid<=read_valid;prod_valid<=acc_valid;abs_valid<=prod_valid;
+            round_valid<=abs_valid;quant_valid<=round_valid;relu_valid<=quant_valid;
+            write_valid<=0;
+            if(rd_en) begin
+                // Output Tile Buffer produces rd_data after this same edge.
+                read_index<=index;read_bias<=selected_bias;read_mult<=selected_mult;
+                read_address<=output_base+channel_offset+row_offset+(x>>1)+index[2];
+                if(index==63) feeding<=0;
+                else index<=index+1'b1;
+            end
+            if(read_valid) begin
+                acc<=rd_data+read_bias;acc_mult<=read_mult;
+                acc_index<=read_index;acc_address<=read_address;
+            end
+            if(acc_valid) begin
+                product<=acc*acc_mult;prod_index<=acc_index;prod_address<=acc_address;
+            end
+            if(prod_valid) begin
+                magnitude<=product[63]?(~product+64'd1):product;abs_negative<=product[63];
+                abs_index<=prod_index;abs_address<=prod_address;
+            end
+            if(abs_valid) begin
+                // Exact half-away-from-zero: (abs(product)+2^30)>>31.
+                rounded<={1'b0,magnitude[63:31]}+magnitude[30];round_negative<=abs_negative;
+                round_index<=abs_index;round_address<=abs_address;
+            end
+            if(round_valid) begin
+                if(rounded>127) q<=round_negative?8'h81:8'h7f;
+                else q<=round_negative?(~rounded[7:0]+8'd1):rounded[7:0];
+                quant_index<=round_index;quant_address<=round_address;
+            end
+            if(quant_valid) begin
+                relu_q<=q[7]?8'd0:q;relu_index<=quant_index;relu_address<=quant_address;
+            end
+            if(relu_valid) begin
+                if(relu_index[1:0]==0) max_value<=relu_q;
+                else if(relu_index[1:0]==3) begin
+                    pool_value<=relu_q>max_value?relu_q:max_value;max_value<=0;
+                    wr_addr<=relu_address;write_valid<=1;write_last<=relu_index==63;
+                end else if(relu_q>max_value) max_value<=relu_q;
+            end
+            // The external Feature BRAM commits this final valid write now.
+            // Release the Output Tile bank only after that edge, never earlier.
+            if(write_valid && write_last) begin active<=0;done<=1;end
+            if(start && !active) begin
+                active<=1;feeding<=1;index<=0;x<=tile_x;y<=tile_y;max_value<=0;write_last<=0;
+                read_valid<=0;acc_valid<=0;prod_valid<=0;abs_valid<=0;
+                round_valid<=0;quant_valid<=0;relu_valid<=0;write_valid<=0;
+            end
         end
     end
 endmodule

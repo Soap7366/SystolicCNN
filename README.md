@@ -26,6 +26,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_timing_sim.ps1
 ```
 
 最后一条默认执行 SDF 回标后的首 Tile 检查及 BRAM 读回；添加 `-FullLayer` 可运行耗时较长的完整 Conv1 门级仿真。
+SDF 输入装载采用带地址/数据保护周期的 host 写入，并在计算前核验实际输入；连续引脚级 host 写入问题见验证报告。
 完整层的整数正确性使用上面的 `-Test layer` 验证，实际覆盖 Conv1、Conv2、Conv3 各两个样本。
 
 移动工程后，运行 `scripts/configure_project.tcl` 更新 GUI 工程中的参数文件路径。

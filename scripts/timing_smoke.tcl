@@ -1,12 +1,44 @@
 # Bounded SDF test using the unmodified routed DUT and tb_timing snapshot.
-# The first Conv1 tile needs input rows 0..2 (top/left halo is padding).
-# Load at least these 192 bytes through the real host interface, then skip
-# the remainder of the TESTBENCH input loop. No DUT state/memory is forced.
+# Own only the TESTBENCH start/input stimulus. The DUT is never forced.
+# For this bounded first-tile test, explicitly write/read its 15 non-padding
+# input bytes with address/data setup and hold cycles around host_wr_en.
+set start_force [add_force /tb_timing/start 0]
 run 5 us
-set loaded [get_value -radix unsigned /tb_timing/i]
-if {$loaded < 192 || $loaded >= 4095} {error "Unexpected host load progress: $loaded"}
-puts "SMOKE loaded prefix bytes=$loaded; skipping unused testbench input writes"
 set_value -radix unsigned /tb_timing/i 4095
+run 1 us
+run 11 ns
+set f [open data/s0_conv1_input.hex r];set input_golden [split [string trim [read $f]] \n];close $f
+set input_addresses {0 1 2 3 4 64 65 66 67 68 128 129 130 131 132}
+set_value /tb_timing/host_wr_en 0
+set_value /tb_timing/host_rd_en 0
+set_value /tb_timing/host_bank 0
+foreach addr $input_addresses {
+    set_value -radix unsigned /tb_timing/host_addr $addr
+    set_value -radix hex /tb_timing/host_wr_data [lindex $input_golden $addr]
+    run 20 ns
+    set_value /tb_timing/host_wr_en 1
+    run 20 ns
+    set_value /tb_timing/host_wr_en 0
+    run 20 ns
+}
+set_value /tb_timing/host_rd_en 1
+foreach addr $input_addresses {
+    set_value -radix unsigned /tb_timing/host_addr $addr
+    run 60 ns
+    run 18 ns
+    set value [get_value -radix hex /tb_timing/host_rd_data]
+    if {[get_value /tb_timing/host_rd_valid] ne "1" || ![string equal -nocase $value [lindex $input_golden $addr]]} {
+        error "Input BRAM verification failed addr=$addr got=$value expected=[lindex $input_golden $addr]"
+    }
+    run 2 ns
+}
+puts "SMOKE input BRAM: 15 exact first-tile bytes verified before start"
+set_value /tb_timing/host_rd_en 0
+run 60 ns
+remove_forces $start_force
+set_value /tb_timing/start 1
+run 20 ns
+set_value /tb_timing/start 0
 set f [open data/s0_conv1_out.hex r]
 set golden [split [string trim [read $f]] \n]
 close $f
@@ -21,7 +53,7 @@ foreach obj [get_objects /tb_timing/dut/*] {
 if {$write_enable eq ""} {error "Destination BRAM write enable is not observable"}
 puts "SMOKE write-enable signal=$write_enable"
 # Sample at external rising edge +19 ns, after routed combinational settling.
-run 9 ns
+run 18 ns
 for {set cycle 0} {$cycle < 3000} {incr cycle} {
     if {[get_value $write_enable] eq "1"} {
         set addr [get_value -radix unsigned /tb_timing/dut/output_addr]
