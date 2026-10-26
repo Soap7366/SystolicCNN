@@ -37,11 +37,11 @@ module cnn_layer_accelerator #(
         .array_start(array_start),.array_bank(array_bank),.result_bank(result_bank),.array_done(array_done),
         .post_start(post_start),.post_bank(post_bank),.post_y(post_y),.post_x(post_x),.post_done(post_done),.done(group_done));
 
-    wire feature_en;wire [12:0] feature_addr;wire [7:0] feature_data;
+    wire feature_en;wire [3:0] feature_mask;wire [51:0] feature_addr;wire [31:0] feature_data;
     wire act_wr;wire [3:0] act_ic;wire [71:0] act_top,act_bottom;wire [3:0] act_p;
     prep_controller prep(.clk(clk),.rst(rst),.start(prep_start),.tile_y(prep_y),.tile_x(prep_x),
         .height(height),.width(width),.cin(cin),.input_base(input_base),
-        .feature_en(feature_en),.feature_addr(feature_addr),.feature_data(feature_data),
+        .feature_en(feature_en),.feature_mask(feature_mask),.feature_addr(feature_addr),.feature_data(feature_data),
         .act_wr_en(act_wr),.act_wr_ic(act_ic),.act_wr_p(act_p),.act_wr_top(act_top),.act_wr_bottom(act_bottom),
         .done(prep_done),.busy(prep_busy));
     wire tile_rd;wire [7:0] tile_addr;wire [3:0] act_rd_ic,act_rd_tap;wire [127:0] act_data;wire [63:0] weight_tile_data;
@@ -84,7 +84,7 @@ module cnn_layer_accelerator #(
     // Registered external readback avoids a BRAM -> bank mux -> I/O path.
     // start and host accesses must not be issued together (start has priority).
     wire host_accept=host_ready && !start && !rst;
-    wire [7:0] a_read,b_read;
+    wire [7:0] a_read,b_read;wire [31:0] a_column,b_column;
     reg host_read_bank,host_read_pending;
     always @(posedge clk) begin
         if(rst) begin host_ready<=0;host_rd_valid<=0;host_read_bank<=0;host_read_pending<=0;host_rd_data<=0;end
@@ -96,14 +96,19 @@ module cnn_layer_accelerator #(
             if(host_rd_en && host_accept) host_read_bank<=host_bank;
         end
     end
-    assign feature_data=src?b_read:a_read;
+    assign feature_data=src?b_column:a_column;
     genvar bank;
     generate for(bank=0;bank<2;bank=bank+1) begin: feature_memories
         wire wr=(busy && post_wr && dst==bank) || (host_accept && host_wr_en && host_bank==bank);
-        wire re=(busy && feature_en && src==bank) || (host_accept && host_rd_en && host_bank==bank);
-        wire [7:0] rd;
-        feature_bram ram(.clk(clk),.wr_en(wr),.wr_addr(busy?output_addr:host_addr),
-            .wr_data(busy?output_data:host_wr_data),.rd_en(re),.rd_addr(busy?feature_addr:host_addr),.rd_data(rd));
-        if(bank==0) assign a_read=rd;else assign b_read=rd;
+        wire re=host_accept && host_rd_en && host_bank==bank;
+        wire [7:0] rd;wire [31:0] column;
+        wire [6:0] write_width=busy?(width>>1):((host_bank==cfg_src)?cfg_width:(cfg_width>>1));
+        feature_bram ram(.clk(clk),.rst(rst),.wr_en(wr),.wr_width(write_width),
+            .wr_addr(busy?output_addr:host_addr),.wr_data(busy?output_data:host_wr_data),
+            .rd_en(re),.rd_addr(host_addr),.rd_data(rd),
+            .col_en((busy && src==bank)?feature_mask:4'b0),
+            .col_addr(feature_addr),.col_width(width),.col_data(column));
+        if(bank==0) begin assign a_read=rd;assign a_column=column;end
+        else begin assign b_read=rd;assign b_column=column;end
     end endgenerate
 endmodule

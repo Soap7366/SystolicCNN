@@ -1,4 +1,4 @@
-param([ValidateSet('array','post','layer')][string]$Test='layer')
+param([ValidateSet('array','post','layer','memory')][string]$Test='layer')
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 Set-Location $root

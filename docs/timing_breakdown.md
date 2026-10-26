@@ -1,6 +1,6 @@
 # Prep 与 Post 优化逐阶段时钟剖析
 
-当前 8×16 阵列与四路 Post 的最新测量见 [两步优化记录](array_8x16_optimization.md)。
+当前四 bank 按列流式 Prep 的最新测量见 [按列读取优化记录](column_stream_optimization.md)。此前阵列扩展及四路 Post 的测量见 [两步优化记录](array_8x16_optimization.md)。
 以下保留 8×8 阵列各次优化的历史测量，不能作为当前 RTL 的耗时。
 
 ## 历史实现：8×8，Post 每拍接收一个结果

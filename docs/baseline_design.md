@@ -8,11 +8,11 @@
 
 | 基准模块 | 文件 / 实现 |
 |---|---|
-| Feature BRAM A/B | `memories.v` / 两块 8192×8 同步读写 BRAM，无数组复位 |
+| Feature BRAM A/B | `memories.v` / 两块逻辑 8192×8，每块物理分为四个 2048×8 行 bank，无数组复位 |
 | Weight / Bias / Quant ROM | `memories.v` / 8192×8、64×32、64×32；由导出整数初始化 |
 | cnn_controller | `cnn_controller.v` / 锁存层配置，加载参数，逐 OC 组运行，等待最终写回 |
 | tile_controller | `tile_controller.v` / Prep、Array、Post 独立工作，双缓冲所有权管理 |
-| line_buffer | `prep.v` / 四条行缓存，每条保存当前 Tile 所需的十列（包含 halo） |
+| 输入列流水 | `prep.v` + `memories.v` / 四 bank 同时读取一列，经行顺序调整和 padding 补零后直接送入滑窗，无完整 4×10 暂存区 |
 | 4×3 Sliding Window | `prep.v` / 四行三列移位寄存器，生成上下两个 3×3 窗口 |
 | window tile assembler | `prep.v` / 一拍将上下两个完整 3×3 窗口写入两个空间列 |
 | Activation Tile Buffer | `memories.v` / 逻辑两组 144×16 INT8；物理按九个 tap×十六个空间 lane 分 bank，每个 bank 深度 16 |
@@ -26,7 +26,7 @@
 
 ```mermaid
 flowchart LR
-    F[Feature BRAM A/B] --> L[四行缓存]
+    F[Feature BRAM A/B 四行分 bank] --> L[四路同步读与 padding]
     L --> W[4×3 Sliding Window]
     W --> T[Window Tile Assembler]
     T --> A[Activation Tile 双缓冲]
@@ -41,8 +41,8 @@ flowchart LR
 ```
 
 采用基准方案中的逐空间 Tile 准备方式，外循环是八个输出通道组成的 OC 组。
-每个 Tile 内依次处理所有输入通道，切换通道时重新加载该通道四行所需片段。
-这是四条短行缓存加真实 4×3 滑窗：数据并非绕过滑窗直接送入阵列。
+每个 Tile 内依次处理所有输入通道，每通道连续请求十列，每列四个 INT8 并行返回。
+列数据直接推进真实 4×3 滑窗，不再使用原 4×10 暂存区。
 一行片段有十列，前三列建立滑窗，再右移七次，共产生八个有效水平位置。
 相邻水平窗口复用两列；首版不复用跨 Tile 的 halo，换 Tile/通道会重新装载。
 
@@ -69,16 +69,19 @@ flowchart LR
 复位丢弃正在执行的任务；Feature RAM 内容不清空，必须重新启动一层。
 
 Feature RAM / 参数 ROM 在读使能有效的上升沿采样地址，沿后更新读数据。
-Prep 在 STREAM 中连续 40 拍产生当前通道四行×十列的地址，每拍产生一个位置。
-地址及 row/col/padding/valid 先寄存；下一沿 BRAM 采样请求，同时寄存返回标签；再下一沿按标签写入行缓存。
-三者重叠，稳态每拍写一个位置；最后用两拍 DRAIN 等待在途返回写完。
-Padding 仍是有效的零数据 token，但不发越界 RAM 读取，不会误用前次 RAM 读出的旧数据。
+Prep 在 STREAM 中连续十拍产生列请求，每拍至多四个逻辑地址。
+Feature RAM 以绝对逻辑行号模四分 bank，每块 RAM 维护最近写入的图像宽度，用于主机回读。
+内部地址从逻辑 CHW 地址中移除两个 bank 位；读取后按 bank 选择寄存器恢复上到下的行顺序。
+Post 写入使用池化宽度；host 输入写入使用 cfg_width，host 目的区写入使用 cfg_width/2，装载期间配置须稳定。
+主机回读使用存储自身的布局记录，不依赖当前 cfg；复位保持 RAM 内容及布局记录。
+地址及四路 padding/valid 先寄存；下一沿 BRAM 采样请求、寄存返回标签；再下一沿滑窗接收一列。
+Padding 是有效的零 token，但对应 lane 不发 RAM 读取。
 Weight Loader 同样把地址计算、请求和返回数据存储分开。
 
 滑窗只在 `step` 有效时更新；十列连续移入，前两列预热，随后每拍产生一对窗口，共八对。
 Assembler 将一对窗口的 18 个 INT8 同时写入独立的 tap/lane bank：每个物理 bank 每拍仍只有一个写地址。
 所有 bank 以输入通道为地址，因此无需九拍循环复制。最后一对窗口写入后才结束该通道或宣布 Prep 完成。
-每通道用 40 拍 STREAM、2 拍 DRAIN、1 拍清窗、10 拍 SHIFT、1 拍 FLUSH；加一拍调度交接后，每 Tile 的阶段占用为 `54*Cin+1` 拍。
+每通道用 1 拍清窗、10 拍 STREAM、3 拍返回/末窗提交；加一拍调度交接后，每 Tile 的阶段占用为 `14*Cin+1` 拍。
 Activation Buffer 每拍输出十六个 INT8，Weight Buffer 每拍输出八个 INT8，读取延迟均为一拍。
 Mapper 在原线性 K 地址之外维护 ic/tap 计数器，满足 `k=ic*9+tap`，避免组合除以九或求余的长路径。
 激活缓存从对应 tap/ic 选择十六个空间 lane 后寄存输出；K 维数据顺序保持一致。
@@ -107,8 +110,8 @@ Activation full 从 Prep 完成保持到 Array 完成；Output full 从 Array �
 OC 组切换前排空当前组，因此不会用新参数处理旧输出。
 
 三级是任务级流水线，不代表三阶段都只用一拍或长期同速。
-经过 8×16 与四路 Post 优化，Prep 每 Tile 为 55/433/865 拍，Array 为 34/97/169 拍，Post 为 42 拍。
-三层主要受单组行缓存的输入准备限制，Array 等待结果空 bank 的计数均为零。
+经过四 bank 按列流水优化，Prep 每 Tile 为 15/113/225 拍，Array 为 34/97/169 拍，Post 为 42 拍。
+Conv1 主要受 Post 限制，Array 等待结果空 bank 为 2032 拍；Conv2/3 仍受输入准备限制，该项等待均为零。
 双缓冲允许阶段重叠，但不能消除持续吞吐瓶颈；不能按 128 MAC/拍推算整层实测吞吐。
 
 ## 顶层接口
@@ -164,9 +167,9 @@ layer 测试使用 0000_y0、0399_y1 两个 golden 样本；检查每个累加�
 样本 0 连续运行三层且不重装中间输入；样本 1 独立装载，反转 bank 并使用非零基地址。
 另外检查非法配置、运行中复位（含读请求/返回同时在途）、busy 时重复 start/host 写入和流水重叠。
 还检查窗口对写入数量、连续地址 token 数量，以及 Mapper 的线性 K 与 ic/tap 一致性。
-带布线延迟仿真默认检查首个 Tile 的 32 个输出及实际 BRAM 读回；完整层正确性由上述 layer 测试覆盖。
+本次四路 Prep 尚未重跑动态 SDF。脚本支持检查首个 Tile 的 32 个输出及实际 BRAM 读回；完整层正确性由上述 layer 测试覆盖。
 SDF 检查在启动计算前还读回核对首 Tile 的 27 个实际输入字节，装载时采用上述保护周期协议。
-详细覆盖范围和已通过结果见 `docs/verification.md`。
+最新结果见 [按列读取优化记录](column_stream_optimization.md)；`docs/verification.md` 保留此前阵列/Post 的历史验证。
 
 物理时序在器件上执行含 IBUF/OBUF/BUFG 的完整综合、布局、布线，20ns 时钟、0.2ns uncertainty，
 输入/输出外部预算 max=2ns、min=0.5ns，见 `constraints/core_50mhz.xdc`。

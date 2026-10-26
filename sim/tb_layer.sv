@@ -23,6 +23,8 @@ module tb_layer #(parameter DATA_DIR="data");
     integer prep_address_slots,feature_reads,window_pair_writes;
     integer occupancy[0:7],prep_states[0:7],post_states[0:10];
     integer oc,p,yy,xx,idx,debug_lane;
+    integer window_checks=0,wt,wr,wc,wy,wx,wi;
+    reg [7:0] window_expected;
     bit checking=0;
     string filename;
 
@@ -37,8 +39,25 @@ module tb_layer #(parameter DATA_DIR="data");
             if(dut.scheduler.post_active) active_post=active_post+1;
             if(dut.mapper.feeding) mapper_feed_cycles=mapper_feed_cycles+1;
             if(dut.prep.state==1) prep_address_slots=prep_address_slots+1;
-            if(dut.feature_en) feature_reads=feature_reads+1;
+            for(integer read_lane=0;read_lane<4;read_lane=read_lane+1)
+                if(dut.feature_mask[read_lane]) feature_reads=feature_reads+1;
             if(dut.act_wr) window_pair_writes=window_pair_writes+1;
+            // Check all 18 window bytes against logical CHW golden input, before MAC.
+            if(dut.act_wr) begin
+                for(wt=0;wt<9;wt=wt+1) begin
+                    for(wr=0;wr<2;wr=wr+1) begin
+                        wy=dut.prep.y+wr+wt/3-1;
+                        wx=dut.prep.x+dut.prep.position+wt%3-1;
+                        window_expected=0;
+                        if(wy>=0 && wy<h && wx>=0 && wx<h)
+                            window_expected=inputs[dut.act_ic*h*h+wy*h+wx];
+                        if((wr==0 && dut.act_top[wt*8+:8]!==window_expected) ||
+                           (wr==1 && dut.act_bottom[wt*8+:8]!==window_expected))
+                            $fatal(1,"window mismatch sample=%0d layer=%0d ic=%0d x=%0d y=%0d tap=%0d",sample,layer,dut.act_ic,wx,wy,wt);
+                        window_checks=window_checks+1;
+                    end
+                end
+            end
             if(dut.tile_rd && dut.act_rd_ic*9+dut.act_rd_tap!=dut.tile_addr)
                 $fatal(1,"activation/weight read index disagreement");
             if(dut.scheduler.prep_done) prep_tiles=prep_tiles+1;
@@ -105,8 +124,8 @@ module tb_layer #(parameter DATA_DIR="data");
             cfg_dst=!cfg_src;
             ibase=0;obase=0;
             if(s==1) begin
-                if(l!=2) ibase=64;
-                if(l!=1) obase=128;
+                if(l!=2) ibase=65;
+                if(l!=1) obase=129;
             end
             cfg_input_base=ibase;cfg_output_base=obase;
             nin=ci*h*h;nout=co*h*h/4;nacc=co*h*h;
@@ -176,7 +195,7 @@ module tb_layer #(parameter DATA_DIR="data");
                 checking=0;
                 while(!host_ready) @(negedge clk);
                 if(acc_count!=nacc || out_count!=nout) $fatal(1,"incomplete coverage acc=%0d/%0d out=%0d/%0d",acc_count,nacc,out_count,nout);
-                if(prep_address_slots!=prep_tiles*ci*40 || window_pair_writes!=prep_tiles*ci*8)
+                if(prep_address_slots!=prep_tiles*ci*10 || window_pair_writes!=prep_tiles*ci*8)
                     $fatal(1,"incomplete parallel window/stream coverage");
                 for(profile_j=0;profile_j<8;profile_j=profile_j+1)
                     if(post_states[profile_j]!=nacc/4) $fatal(1,"Post group pipeline token count mismatch stage=%0d",profile_j);
@@ -198,6 +217,7 @@ module tb_layer #(parameter DATA_DIR="data");
             end
         end
         if(total_triple==0) $fatal(1,"no three-stage overlap across suite");
+        $display("PASS window bytes: %0d exact comparisons",window_checks);
         $display("PASS tb_layer: 6 layers; exact accumulators, pool writes and BRAM readback; reset, invalid config, busy isolation, chain");$finish;
     end
     initial begin #200000000; $fatal(1,"global watchdog");end

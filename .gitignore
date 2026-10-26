@@ -1,0 +1,15 @@
+/.Xil/
+/CNN_Accelerator.cache/
+/CNN_Accelerator.hw/
+/CNN_Accelerator.ip_user_files/
+/CNN_Accelerator.sim/
+/CNN_Accelerator.srcs/
+/xsim.dir/
+/build/
+/*.wdb
+/*.pb
+/*.log
+/*.jou
+/rtl.zip
+/clockInfo.txt
+/tight_setup_hold_pins.txt

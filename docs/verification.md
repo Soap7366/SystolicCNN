@@ -1,5 +1,7 @@
 ﻿# 验证记录：8×16 阵列与四路 Post
 
+> 本文保留此前架构的历史测量。最新四 bank 按列流式 Prep 见 [按列读取优化记录](column_stream_optimization.md)。此前 SDF 通过结果不代表本次新网表已完成动态 SDF。
+
 环境：Vivado / XSim 2023.2，xc7z020clg400-1，50 MHz。更新于 2026-10-26。
 入口：`rtl/cnn_layer_accelerator.v`；工程：`CNN_Accelerator.xpr`。
 两步实施顺序、结构和详细耗时见 [优化记录](array_8x16_optimization.md)。

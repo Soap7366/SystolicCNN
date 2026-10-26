@@ -4,7 +4,9 @@
 **Conv → Bias → INT8 重定标 → ReLU → 2×2 MaxPool → BRAM 写回**。
 
 当前架构为 **8 个输出通道 × 16 个空间位置、四路并行 Post**。
-先完成单路 Post 版本的 CNN/静态时序验证，再根据实测瓶颈实施四路 Post；[两步对比与验证记录](docs/array_8x16_optimization.md)。
+当前 Prep 已改成按列流式读取，每块 Feature BRAM 分为四个行 bank，同拍返回四行的一列，直接推进滑窗。
+先验证单路按列版本，再实现四路读取；[本次结构、性能与验证记录](docs/column_stream_optimization.md)。
+此前的[阵列与 Post 优化记录](docs/array_8x16_optimization.md)保留为历史对比。
 
 - [架构、Tile、时钟与接口说明](docs/baseline_design.md)
 - [验证结果、资源与交付边界](docs/verification.md)
@@ -23,12 +25,14 @@ Vivado 工程 `CNN_Accelerator.xpr` 已设置设计顶层 `cnn_layer_accelerator
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_sim.ps1 -Test array
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_sim.ps1 -Test post
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_sim.ps1 -Test memory
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_sim.ps1 -Test layer
 & 'D:\Vivado\2023.2\bin\vivado.bat' -mode batch -source scripts/implement.tcl -log build/implementation.log -journal build/implementation.jou
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_timing_sim.ps1
 ```
 
-最后一条默认执行 SDF 回标后的首 Tile 检查及 BRAM 读回；添加 `-FullLayer` 可运行耗时较长的完整 Conv1 门级仿真。
+本次四路 Prep 执行 RTL 回归和新一轮综合布局布线，尚未重跑动态 SDF。
+最后一条可执行 SDF 回标后的首 Tile 检查及 BRAM 读回；添加 `-FullLayer` 可运行耗时较长的完整 Conv1 门级仿真。
 SDF 输入装载采用带地址/数据保护周期的 host 写入，并在计算前核验实际输入；连续引脚级 host 写入问题见验证报告。
 完整层的整数正确性使用上面的 `-Test layer` 验证，实际覆盖 Conv1、Conv2、Conv3 各两个样本。
 

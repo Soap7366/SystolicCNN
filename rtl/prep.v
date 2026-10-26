@@ -1,20 +1,5 @@
 `timescale 1ns/1ps
-// Four row banks. In tile-priority scheduling only the ten required columns
-// (including halo) are resident. The 4x3 sliding window reuses two columns.
-module line_buffer(
-    input wire clk,wr_en,input wire [1:0] wr_row,input wire [3:0] wr_col,
-    input wire [7:0] wr_data,input wire [3:0] rd_col,output wire [31:0] column
-);
-    reg [7:0] row0[0:9],row1[0:9],row2[0:9],row3[0:9];
-    always @(posedge clk) if(wr_en) begin
-        case(wr_row)
-            0:row0[wr_col]<=wr_data;1:row1[wr_col]<=wr_data;
-            2:row2[wr_col]<=wr_data;3:row3[wr_col]<=wr_data;
-        endcase
-    end
-    assign column={row3[rd_col],row2[rd_col],row1[rd_col],row0[rd_col]};
-endmodule
-
+// Columns are assembled directly from tagged BRAM returns.
 module window_gen_4x3(
     input wire clk,rst,clear,step,input wire [31:0] column,
     output reg valid,output reg [2:0] position,
@@ -72,78 +57,77 @@ endmodule
 module prep_controller(
     input wire clk,rst,start,input wire [6:0] tile_y,tile_x,height,width,
     input wire [4:0] cin,input wire [12:0] input_base,
-    output wire feature_en,output reg [12:0] feature_addr,input wire [7:0] feature_data,
+    output wire feature_en,output wire [3:0] feature_mask,
+    output reg [51:0] feature_addr,input wire [31:0] feature_data,
     output wire act_wr_en,output wire [3:0] act_wr_ic,
     output wire [3:0] act_wr_p,output wire [71:0] act_wr_top,act_wr_bottom,
     output reg done,output wire busy
 );
-    localparam IDLE=0,STREAM=1,DRAIN=2,CLEAR_WINDOW=3,SHIFT=4,FLUSH=5;
+    localparam IDLE=0,STREAM=1,CLEAR_WINDOW=3,FLUSH=5;
     reg [2:0] state;
-    reg [1:0] row;reg [3:0] col,scan_col;
+    reg [3:0] col;
     reg [4:0] ic;
     reg [6:0] x,y;
-    // Address stage -> synchronous BRAM request -> tagged return/write stage.
-    // Padding is a valid pipeline token even though it issues no RAM request.
-    reg req_valid,req_padding,ret_valid,ret_padding;
-    reg [1:0] req_row,ret_row;
-    reg [3:0] req_col,ret_col;
-    wire signed [9:0] iy=$signed({3'b0,y})+$signed({8'b0,row})-10'sd1;
-    wire signed [9:0] ix=$signed({3'b0,x})+$signed({6'b0,col})-10'sd1;
-    wire outside=(iy<0 || ix<0 || iy>=$signed({3'b0,height}) || ix>=$signed({3'b0,width}));
-    assign feature_en=req_valid && !req_padding && !rst;
+    // Request and return tags include padding even if no physical RAM is read.
+    reg req_valid,ret_valid;
+    reg [3:0] req_padding,ret_padding,req_col,ret_col;
+    reg [51:0] next_addr;
+    reg [3:0] next_padding;
+    reg signed [9:0] iy,ix;
     reg [12:0] channel_offset,row_offset;
+    integer lane;
     always @* begin
-        case(width)
-            64:begin channel_offset={8'd0,ic}<<12;row_offset={3'd0,iy}<<6;end
-            32:begin channel_offset={8'd0,ic}<<10;row_offset={3'd0,iy}<<5;end
-            default:begin channel_offset={8'd0,ic}<<8;row_offset={3'd0,iy}<<4;end
-        endcase
+        channel_offset=0;row_offset=0;iy=0;
+        ix=$signed({3'b0,x})+$signed({6'b0,col})-10'sd1;
+        next_addr=0;next_padding=0;
+        for(lane=0;lane<4;lane=lane+1) begin
+            iy=$signed({3'b0,y})+lane-1;
+            case(width)
+                64:begin channel_offset={8'd0,ic}<<12;row_offset=iy<<6;end
+                32:begin channel_offset={8'd0,ic}<<10;row_offset=iy<<5;end
+                default:begin channel_offset={8'd0,ic}<<8;row_offset=iy<<4;end
+            endcase
+            next_padding[lane]=(iy<0 || ix<0 || iy>=$signed({3'b0,height}) || ix>=$signed({3'b0,width}));
+            next_addr[lane*13+:13]=next_padding[lane]?13'd0:input_base+channel_offset+row_offset+ix[6:0];
+        end
     end
+    assign feature_mask={4{req_valid && !rst}} & ~req_padding;
+    assign feature_en=|feature_mask;
     assign busy=state!=IDLE;
     wire [31:0] column;
-    wire win_valid,asm_ready,asm_done;
+    genvar r;
+    generate for(r=0;r<4;r=r+1) begin: padding_lanes
+        assign column[r*8+:8]=ret_padding[r]?8'd0:feature_data[r*8+:8];
+    end endgenerate
+    wire win_valid,asm_done;
     wire [2:0] position;wire [71:0] tw,bw;
-    line_buffer rows(.clk(clk),.wr_en(ret_valid && !rst),.wr_row(ret_row),.wr_col(ret_col),
-        .wr_data(ret_padding?8'd0:feature_data),.rd_col(scan_col),.column(column));
     window_gen_4x3 window(.clk(clk),.rst(rst),.clear(state==CLEAR_WINDOW),
-        .step(state==SHIFT),.column(column),.valid(win_valid),.position(position),
+        .step(ret_valid && !rst),.column(column),.valid(win_valid),.position(position),
         .top_window(tw),.bottom_window(bw));
     window_tile_assembler assembler(.clk(clk),.rst(rst),.window_valid(win_valid),
         .position(position),.ic(ic),.top_window(tw),.bottom_window(bw),
-        .ready(asm_ready),.done(asm_done),.wr_en(act_wr_en),.wr_ic(act_wr_ic),
+        .ready(),.done(asm_done),.wr_en(act_wr_en),.wr_ic(act_wr_ic),
         .wr_p(act_wr_p),.wr_top(act_wr_top),.wr_bottom(act_wr_bottom));
     always @(posedge clk) begin
         if(rst) begin
-            state<=IDLE;done<=0;row<=0;col<=0;scan_col<=0;ic<=0;x<=0;y<=0;feature_addr<=0;
-            req_valid<=0;req_padding<=0;req_row<=0;req_col<=0;
-            ret_valid<=0;ret_padding<=0;ret_row<=0;ret_col<=0;
-        end
-        else begin
-            done<=0;
-            req_valid<=0;
-            ret_valid<=req_valid;ret_padding<=req_padding;ret_row<=req_row;ret_col<=req_col;
+            state<=IDLE;done<=0;col<=0;ic<=0;x<=0;y<=0;feature_addr<=0;
+            req_valid<=0;req_padding<=0;req_col<=0;
+            ret_valid<=0;ret_padding<=0;ret_col<=0;
+        end else begin
+            done<=0;req_valid<=0;
+            ret_valid<=req_valid;ret_padding<=req_padding;ret_col<=req_col;
             case(state)
-                IDLE:if(start) begin x<=tile_x;y<=tile_y;ic<=0;row<=0;col<=0;state<=STREAM;end
+                IDLE:if(start) begin x<=tile_x;y<=tile_y;ic<=0;col<=0;state<=CLEAR_WINDOW;end
+                CLEAR_WINDOW:state<=STREAM;
                 STREAM:begin
-                    req_valid<=1;req_padding<=outside;req_row<=row;req_col<=col;
-                    feature_addr<=outside?13'd0:input_base+channel_offset+row_offset+ix[6:0];
-                    if(col==9) begin
-                        col<=0;
-                        if(row==3) state<=DRAIN;
-                        else row<=row+1'b1;
-                    end else col<=col+1'b1;
+                    req_valid<=1;req_padding<=next_padding;req_col<=col;feature_addr<=next_addr;
+                    if(col==9) state<=FLUSH;
+                    else col<=col+1'b1;
                 end
-                DRAIN:if(ret_valid && ret_row==3 && ret_col==9) begin scan_col<=0;state<=CLEAR_WINDOW;end
-                CLEAR_WINDOW:state<=SHIFT;
-                SHIFT:begin
-                    if(scan_col==9) state<=FLUSH;
-                    else scan_col<=scan_col+1'b1;
-                end
-                // The final window is committed by Activation Buffer on this edge.
-                // Keep ic/bank unchanged until that write, then advance the channel.
+                // Keep channel/bank ownership until the last window pair commits.
                 FLUSH:if(asm_done) begin
                     if(ic==cin-1) begin state<=IDLE;done<=1;end
-                    else begin ic<=ic+1'b1;row<=0;col<=0;state<=STREAM;end
+                    else begin ic<=ic+1'b1;col<=0;state<=CLEAR_WINDOW;end
                 end
                 default:state<=IDLE;
             endcase
