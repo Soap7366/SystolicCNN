@@ -12,6 +12,7 @@
 - [验证结果、资源与交付边界](docs/verification.md)
 - [参数加载、Prep、Array、Post 逐阶段耗时](docs/timing_breakdown.md)
 - [模型整数导出来源与校验值](data/manifest.json)
+- [双任务 baseline_2 QAT：兼容性与 30 个样本的实际三层串接验证](docs/dual_task_baseline2_qat_verification.md)
 - `rtl/`：可综合 Verilog
 - `sim/`：阵列、重定标、完整层、布线后仿真 testbench
 - `scripts/`：导出、仿真、工程配置、综合及布局布线

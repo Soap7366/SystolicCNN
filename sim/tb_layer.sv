@@ -1,5 +1,7 @@
 `timescale 1ns/1ps
-module tb_layer #(parameter DATA_DIR="data");
+module tb_layer #(
+    parameter DATA_DIR="data",SAMPLE_COUNT=2,CHAIN_ALL=0,RESULT_DIR=""
+);
     reg clk=0;always #5 clk=~clk;
     reg rst=1,start=0;
     reg [4:0] cfg_cin;reg [5:0] cfg_cout;
@@ -25,6 +27,7 @@ module tb_layer #(parameter DATA_DIR="data");
     integer oc,p,yy,xx,idx,debug_lane;
     integer window_checks=0,wt,wr,wc,wy,wx,wi;
     reg [7:0] window_expected;
+    integer result_file;
     bit checking=0;
     string filename;
 
@@ -120,12 +123,14 @@ module tb_layer #(parameter DATA_DIR="data");
                 3:begin ci=16;co=32;h=16;cfg_weight_base=1224;cfg_bias_base=24;cfg_quant_base=24;end
             endcase
             cfg_cin=ci;cfg_cout=co;cfg_height=h;cfg_width=h;
-            cfg_src=(l==2);if(s==1) cfg_src=!cfg_src;
+            cfg_src=(l==2);if(s%2==1) cfg_src=!cfg_src;
             cfg_dst=!cfg_src;
             ibase=0;obase=0;
-            if(s==1) begin
+            if(s%2==1) begin
                 if(l!=2) ibase=65;
                 if(l!=1) obase=129;
+                // In chain mode Conv3 must consume Conv2's actual output base.
+                if(CHAIN_ALL && l==3) ibase=129;
             end
             cfg_input_base=ibase;cfg_output_base=obase;
             nin=ci*h*h;nout=co*h*h/4;nacc=co*h*h;
@@ -165,14 +170,14 @@ module tb_layer #(parameter DATA_DIR="data");
         if(busy || dut.prep.req_valid || dut.prep.ret_valid || dut.feature_en || dut.act_wr)
             $fatal(1,"reset did not drain/kill Prep transactions");
         rst=0;
-        for(sample=0;sample<2;sample=sample+1) begin
+        for(sample=0;sample<SAMPLE_COUNT;sample=sample+1) begin
             for(layer=1;layer<=3;layer=layer+1) begin
                 configure(layer,sample);
                 filename=$sformatf("%s/s%0d_conv%0d_input.hex",DATA_DIR,sample,layer);$readmemh(filename,inputs,0,nin-1);
                 filename=$sformatf("%s/s%0d_conv%0d_acc.hex",DATA_DIR,sample,layer);$readmemh(filename,expected_acc,0,nacc-1);
                 filename=$sformatf("%s/s%0d_conv%0d_out.hex",DATA_DIR,sample,layer);$readmemh(filename,expected_out,0,nout-1);
                 // sample 0: Conv2/3 consume actual preceding RTL outputs, no input reload.
-                if(sample!=0 || layer==1) load_input();
+                if(layer==1 || (!CHAIN_ALL && sample!=0)) load_input();
                 for(i=0;i<nacc;i=i+1) seen_acc[i]=0;
                 for(i=0;i<nout;i=i+1) seen_out[i]=0;
                 acc_count=0;out_count=0;overlap=0;prep_array_overlap=0;prep_post_overlap=0;cycles=0;
@@ -202,11 +207,19 @@ module tb_layer #(parameter DATA_DIR="data");
                 if(post_states[8]!=nout) $fatal(1,"Post pipeline write count mismatch");
                 if(prep_array_overlap==0 || prep_post_overlap==0) $fatal(1,"independent pipeline stages never overlapped");
                 total_triple=total_triple+overlap;
+                result_file=0;
+                if(RESULT_DIR!="") begin
+                    filename=$sformatf("%s/s%0d_conv%0d_out.hex",RESULT_DIR,sample,layer);
+                    result_file=$fopen(filename,"w");
+                    if(!result_file) $fatal(1,"cannot open actual BRAM output %s",filename);
+                end
                 for(i=0;i<nout;i=i+1) begin
                     @(negedge clk);host_rd_en=1;host_bank=cfg_dst;host_addr=obase+i;
                     repeat(2) @(posedge clk);#1;
                     if(!host_rd_valid || host_rd_data!==expected_out[i]) $fatal(1,"BRAM read mismatch index=%0d",i);
+                    if(result_file) $fdisplay(result_file,"%02x",host_rd_data);
                 end
+                if(result_file) $fclose(result_file);
                 @(negedge clk);host_rd_en=0;
                 $display("PASS sample=%0d layer=%0d acc=%0d pool=%0d cycles=%0d triple_overlap=%0d prep_array=%0d prep_post=%0d",sample,layer,acc_count,out_count,cycles,overlap,prep_array_overlap,prep_post_overlap);
                 $display("PROFILE sample=%0d layer=%0d total=%0d setup=%0d weight_loader=%0d prep_active=%0d array_active=%0d mapper_feed=%0d post_active=%0d prep_bank_wait=%0d array_output_wait=%0d array_input_wait=%0d post_input_wait=%0d prep_tiles=%0d array_tiles=%0d post_tiles=%0d",sample,layer,profiled_cycles,param_cycles,weight_cycles,active_prep,active_array,mapper_feed_cycles,active_post,prep_bank_wait,array_output_wait,array_input_wait,post_input_wait,prep_tiles,array_tiles,post_tiles);
@@ -218,7 +231,7 @@ module tb_layer #(parameter DATA_DIR="data");
         end
         if(total_triple==0) $fatal(1,"no three-stage overlap across suite");
         $display("PASS window bytes: %0d exact comparisons",window_checks);
-        $display("PASS tb_layer: 6 layers; exact accumulators, pool writes and BRAM readback; reset, invalid config, busy isolation, chain");$finish;
+        $display("PASS tb_layer: %0d layers; exact accumulators, pool writes and BRAM readback; reset, invalid config, busy isolation, chain",SAMPLE_COUNT*3);$finish;
     end
     initial begin #200000000; $fatal(1,"global watchdog");end
 endmodule
