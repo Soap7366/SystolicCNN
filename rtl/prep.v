@@ -1,11 +1,11 @@
 `timescale 1ns/1ps
-// Four row banks. In tile-priority scheduling only the six required columns
+// Four row banks. In tile-priority scheduling only the ten required columns
 // (including halo) are resident. The 4x3 sliding window reuses two columns.
 module line_buffer(
-    input wire clk,wr_en,input wire [1:0] wr_row,input wire [2:0] wr_col,
-    input wire [7:0] wr_data,input wire [2:0] rd_col,output wire [31:0] column
+    input wire clk,wr_en,input wire [1:0] wr_row,input wire [3:0] wr_col,
+    input wire [7:0] wr_data,input wire [3:0] rd_col,output wire [31:0] column
 );
-    reg [7:0] row0[0:5],row1[0:5],row2[0:5],row3[0:5];
+    reg [7:0] row0[0:9],row1[0:9],row2[0:9],row3[0:9];
     always @(posedge clk) if(wr_en) begin
         case(wr_row)
             0:row0[wr_col]<=wr_data;1:row1[wr_col]<=wr_data;
@@ -17,11 +17,11 @@ endmodule
 
 module window_gen_4x3(
     input wire clk,rst,clear,step,input wire [31:0] column,
-    output reg valid,output reg [1:0] position,
+    output reg valid,output reg [2:0] position,
     output reg [71:0] top_window,bottom_window
 );
     reg [7:0] cells[0:11];
-    reg [2:0] count;
+    reg [3:0] count;
     integer r,c;
     always @(posedge clk) begin
         if(rst || clear) begin
@@ -53,19 +53,19 @@ module window_gen_4x3(
 endmodule
 
 module window_tile_assembler(
-    input wire clk,rst,window_valid,input wire [1:0] position,
+    input wire clk,rst,window_valid,input wire [2:0] position,
     input wire [4:0] ic,input wire [71:0] top_window,bottom_window,
     output wire ready,output wire done,
     output wire wr_en,output wire [3:0] wr_ic,
-    output wire [2:0] wr_p,output wire [71:0] wr_top,wr_bottom
+    output wire [3:0] wr_p,output wire [71:0] wr_top,wr_bottom
 );
     // Nine tap banks accept the entire pair of 3x3 windows on one edge.
-    // position 0/1/2/3 maps to spatial pairs 0/2, 1/3, 4/6, 5/7.
+    // position 0..7 maps to spatial pairs 0/2,1/3,...,12/14,13/15.
     assign ready=!rst;
     assign wr_en=window_valid && !rst;
-    assign done=wr_en && position==3;
+    assign done=wr_en && position==7;
     assign wr_ic=ic[3:0];
-    assign wr_p={position[1],1'b0,position[0]};
+    assign wr_p={position[2:1],1'b0,position[0]};
     assign wr_top=top_window;assign wr_bottom=bottom_window;
 endmodule
 
@@ -74,21 +74,21 @@ module prep_controller(
     input wire [4:0] cin,input wire [12:0] input_base,
     output wire feature_en,output reg [12:0] feature_addr,input wire [7:0] feature_data,
     output wire act_wr_en,output wire [3:0] act_wr_ic,
-    output wire [2:0] act_wr_p,output wire [71:0] act_wr_top,act_wr_bottom,
+    output wire [3:0] act_wr_p,output wire [71:0] act_wr_top,act_wr_bottom,
     output reg done,output wire busy
 );
     localparam IDLE=0,STREAM=1,DRAIN=2,CLEAR_WINDOW=3,SHIFT=4,FLUSH=5;
     reg [2:0] state;
-    reg [1:0] row;reg [2:0] col,scan_col;
+    reg [1:0] row;reg [3:0] col,scan_col;
     reg [4:0] ic;
     reg [6:0] x,y;
     // Address stage -> synchronous BRAM request -> tagged return/write stage.
     // Padding is a valid pipeline token even though it issues no RAM request.
     reg req_valid,req_padding,ret_valid,ret_padding;
     reg [1:0] req_row,ret_row;
-    reg [2:0] req_col,ret_col;
+    reg [3:0] req_col,ret_col;
     wire signed [9:0] iy=$signed({3'b0,y})+$signed({8'b0,row})-10'sd1;
-    wire signed [9:0] ix=$signed({3'b0,x})+$signed({7'b0,col})-10'sd1;
+    wire signed [9:0] ix=$signed({3'b0,x})+$signed({6'b0,col})-10'sd1;
     wire outside=(iy<0 || ix<0 || iy>=$signed({3'b0,height}) || ix>=$signed({3'b0,width}));
     assign feature_en=req_valid && !req_padding && !rst;
     reg [12:0] channel_offset,row_offset;
@@ -102,7 +102,7 @@ module prep_controller(
     assign busy=state!=IDLE;
     wire [31:0] column;
     wire win_valid,asm_ready,asm_done;
-    wire [1:0] position;wire [71:0] tw,bw;
+    wire [2:0] position;wire [71:0] tw,bw;
     line_buffer rows(.clk(clk),.wr_en(ret_valid && !rst),.wr_row(ret_row),.wr_col(ret_col),
         .wr_data(ret_padding?8'd0:feature_data),.rd_col(scan_col),.column(column));
     window_gen_4x3 window(.clk(clk),.rst(rst),.clear(state==CLEAR_WINDOW),
@@ -127,16 +127,16 @@ module prep_controller(
                 STREAM:begin
                     req_valid<=1;req_padding<=outside;req_row<=row;req_col<=col;
                     feature_addr<=outside?13'd0:input_base+channel_offset+row_offset+ix[6:0];
-                    if(col==5) begin
+                    if(col==9) begin
                         col<=0;
                         if(row==3) state<=DRAIN;
                         else row<=row+1'b1;
                     end else col<=col+1'b1;
                 end
-                DRAIN:if(ret_valid && ret_row==3 && ret_col==5) begin scan_col<=0;state<=CLEAR_WINDOW;end
+                DRAIN:if(ret_valid && ret_row==3 && ret_col==9) begin scan_col<=0;state<=CLEAR_WINDOW;end
                 CLEAR_WINDOW:state<=SHIFT;
                 SHIFT:begin
-                    if(scan_col==5) state<=FLUSH;
+                    if(scan_col==9) state<=FLUSH;
                     else scan_col<=scan_col+1'b1;
                 end
                 // The final window is committed by Activation Buffer on this edge.

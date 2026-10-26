@@ -3,6 +3,9 @@
 入口模块是 `rtl/cnn_layer_accelerator.v`，由 `cnn_controller` 接收层参数，执行完整的
 **Conv → Bias → INT8 重定标 → ReLU → 2×2 MaxPool → BRAM 写回**。
 
+当前架构为 **8 个输出通道 × 16 个空间位置、四路并行 Post**。
+先完成单路 Post 版本的 CNN/静态时序验证，再根据实测瓶颈实施四路 Post；[两步对比与验证记录](docs/array_8x16_optimization.md)。
+
 - [架构、Tile、时钟与接口说明](docs/baseline_design.md)
 - [验证结果、资源与交付边界](docs/verification.md)
 - [参数加载、Prep、Array、Post 逐阶段耗时](docs/timing_breakdown.md)

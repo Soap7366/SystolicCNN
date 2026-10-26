@@ -22,7 +22,7 @@ module tb_layer #(parameter DATA_DIR="data");
     integer mapper_feed_cycles,prep_tiles,array_tiles,post_tiles,occ,profile_j;
     integer prep_address_slots,feature_reads,window_pair_writes;
     integer occupancy[0:7],prep_states[0:7],post_states[0:10];
-    integer oc,p,yy,xx,idx;
+    integer oc,p,yy,xx,idx,debug_lane;
     bit checking=0;
     string filename;
 
@@ -71,13 +71,15 @@ module tb_layer #(parameter DATA_DIR="data");
             end
         end
         if(dut.debug_valid) begin
-            p=dut.debug_index%8;oc=dut.oc_base+dut.debug_index/8;
+          for(debug_lane=0;debug_lane<4;debug_lane=debug_lane+1) begin
+            p=(dut.debug_index+debug_lane)%16;oc=dut.oc_base+dut.debug_index/16;
             yy=dut.post.y+(p%4)/2;xx=dut.post.x+2*(p/4)+(p%2);
             idx=oc*h*h+yy*h+xx;
             if(idx<0 || idx>=nacc || seen_acc[idx]) $fatal(1,"bad/duplicate accumulator address %0d",idx);
-            if(dut.debug_acc!==expected_acc[idx])
-                $fatal(1,"acc mismatch sample=%0d layer=%0d oc=%0d y=%0d x=%0d got=%0d expected=%0d",sample,layer,oc,yy,xx,dut.debug_acc,$signed(expected_acc[idx]));
+            if(dut.debug_acc[debug_lane*32+:32]!==expected_acc[idx])
+                $fatal(1,"acc mismatch sample=%0d layer=%0d oc=%0d y=%0d x=%0d got=%0d expected=%0d",sample,layer,oc,yy,xx,$signed(dut.debug_acc[debug_lane*32+:32]),$signed(expected_acc[idx]));
             seen_acc[idx]=1;acc_count=acc_count+1;
+          end
         end
         if(dut.post_wr) begin
             idx=dut.output_addr-obase;
@@ -174,10 +176,10 @@ module tb_layer #(parameter DATA_DIR="data");
                 checking=0;
                 while(!host_ready) @(negedge clk);
                 if(acc_count!=nacc || out_count!=nout) $fatal(1,"incomplete coverage acc=%0d/%0d out=%0d/%0d",acc_count,nacc,out_count,nout);
-                if(prep_address_slots!=prep_tiles*ci*24 || window_pair_writes!=prep_tiles*ci*4)
+                if(prep_address_slots!=prep_tiles*ci*40 || window_pair_writes!=prep_tiles*ci*8)
                     $fatal(1,"incomplete parallel window/stream coverage");
                 for(profile_j=0;profile_j<8;profile_j=profile_j+1)
-                    if(post_states[profile_j]!=nacc) $fatal(1,"Post pipeline token count mismatch stage=%0d",profile_j);
+                    if(post_states[profile_j]!=nacc/4) $fatal(1,"Post group pipeline token count mismatch stage=%0d",profile_j);
                 if(post_states[8]!=nout) $fatal(1,"Post pipeline write count mismatch");
                 if(prep_array_overlap==0 || prep_post_overlap==0) $fatal(1,"independent pipeline stages never overlapped");
                 total_triple=total_triple+overlap;
@@ -192,7 +194,7 @@ module tb_layer #(parameter DATA_DIR="data");
                 $display("PROFILE_STREAM sample=%0d layer=%0d address_slots=%0d actual_bram_reads=%0d window_pair_writes=%0d",sample,layer,prep_address_slots,feature_reads,window_pair_writes);
                 $display("PROFILE_OCC sample=%0d layer=%0d none=%0d prep=%0d array=%0d prep_array=%0d post=%0d prep_post=%0d array_post=%0d all=%0d",sample,layer,occupancy[0],occupancy[1],occupancy[2],occupancy[3],occupancy[4],occupancy[5],occupancy[6],occupancy[7]);
                 $display("PROFILE_PREP sample=%0d layer=%0d idle=%0d stream=%0d drain=%0d clear_window=%0d shift=%0d flush=%0d",sample,layer,prep_states[0],prep_states[1],prep_states[2],prep_states[3],prep_states[4],prep_states[5]);
-                $display("PROFILE_POST sample=%0d layer=%0d read_request=%0d read_return=%0d bias=%0d multiply=%0d absolute=%0d rounded=%0d quantized=%0d relu_pool=%0d write=%0d",sample,layer,post_states[0],post_states[1],post_states[2],post_states[3],post_states[4],post_states[5],post_states[6],post_states[7],post_states[8]);
+                $display("PROFILE_POST sample=%0d layer=%0d group_width=4 read_request=%0d read_return=%0d bias=%0d multiply=%0d absolute=%0d rounded=%0d quantized=%0d relu_pool=%0d write=%0d",sample,layer,post_states[0],post_states[1],post_states[2],post_states[3],post_states[4],post_states[5],post_states[6],post_states[7],post_states[8]);
             end
         end
         if(total_triple==0) $fatal(1,"no three-stage overlap across suite");

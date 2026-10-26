@@ -38,13 +38,13 @@ module cnn_layer_accelerator #(
         .post_start(post_start),.post_bank(post_bank),.post_y(post_y),.post_x(post_x),.post_done(post_done),.done(group_done));
 
     wire feature_en;wire [12:0] feature_addr;wire [7:0] feature_data;
-    wire act_wr;wire [3:0] act_ic;wire [71:0] act_top,act_bottom;wire [2:0] act_p;
+    wire act_wr;wire [3:0] act_ic;wire [71:0] act_top,act_bottom;wire [3:0] act_p;
     prep_controller prep(.clk(clk),.rst(rst),.start(prep_start),.tile_y(prep_y),.tile_x(prep_x),
         .height(height),.width(width),.cin(cin),.input_base(input_base),
         .feature_en(feature_en),.feature_addr(feature_addr),.feature_data(feature_data),
         .act_wr_en(act_wr),.act_wr_ic(act_ic),.act_wr_p(act_p),.act_wr_top(act_top),.act_wr_bottom(act_bottom),
         .done(prep_done),.busy(prep_busy));
-    wire tile_rd;wire [7:0] tile_addr;wire [3:0] act_rd_ic,act_rd_tap;wire [63:0] act_data,weight_tile_data;
+    wire tile_rd;wire [7:0] tile_addr;wire [3:0] act_rd_ic,act_rd_tap;wire [127:0] act_data;wire [63:0] weight_tile_data;
     activation_tile_buffer activation_buffer(.clk(clk),.wr_en(act_wr),.wr_bank(prep_bank),
         .wr_ic(act_ic),.wr_p(act_p),.wr_top(act_top),.wr_bottom(act_bottom),
         .rd_en(tile_rd),.rd_bank(array_bank),.rd_ic(act_rd_ic),.rd_tap(act_rd_tap),.rd_data(act_data));
@@ -63,16 +63,16 @@ module cnn_layer_accelerator #(
         .biases(biases),.multipliers(multipliers),.done(load_done));
     weight_tile_buffer weight_buffer(.clk(clk),.wr_en(weight_wr),.wr_lane(weight_lane),
         .wr_addr(weight_k),.wr_data(weight_byte),.rd_en(tile_rd),.rd_addr(tile_addr),.rd_data(weight_tile_data));
-    wire [63:0] a,w;wire [7:0] av,wv,al,wl;wire [2047:0] array_results;
+    wire [127:0] a;wire [63:0] w;wire [15:0] av,al;wire [7:0] wv,wl;wire [4095:0] array_results;
     data_mapper mapper(.clk(clk),.rst(rst),.start(array_start),.k_count(k_count),
         .rd_en(tile_rd),.rd_addr(tile_addr),.act_data(act_data),.weight_data(weight_tile_data),
         .activations(a),.weights(w),.av(av),.wv(wv),.al(al),.wl(wl),.act_rd_ic(act_rd_ic),.act_rd_tap(act_rd_tap));
     systolic_array array(.clk(clk),.rst(rst),.clear(array_start),.activations(a),.weights(w),
         .av(av),.wv(wv),.al(al),.wl(wl),.results(array_results),.done(array_done));
 
-    wire post_rd,post_wr;wire [5:0] post_addr;wire signed [31:0] post_data;
+    wire post_rd,post_wr;wire [4:0] post_addr;wire [127:0] post_data;
     wire [12:0] output_addr;wire [7:0] output_data;
-    wire debug_valid;wire signed [31:0] debug_acc;wire [5:0] debug_index;
+    wire debug_valid;wire [127:0] debug_acc;wire [6:0] debug_index;
     output_tile_buffer output_buffer(.clk(clk),.wr_en(array_done),.wr_bank(result_bank),.wr_data(array_results),
         .rd_en(post_rd),.rd_bank(post_bank),.rd_addr(post_addr),.rd_data(post_data));
     post_processing post(.clk(clk),.rst(rst),.start(post_start),.tile_y(post_y),.tile_x(post_x),

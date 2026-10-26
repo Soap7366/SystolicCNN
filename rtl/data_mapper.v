@@ -6,9 +6,9 @@ module data_mapper(
     input wire [7:0] k_count,
     output wire rd_en,
     output wire [7:0] rd_addr,
-    input wire [63:0] act_data,weight_data,
-    output wire [63:0] activations,weights,
-    output wire [7:0] av,wv,al,wl,
+    input wire [127:0] act_data,input wire [63:0] weight_data,
+    output wire [127:0] activations,output wire [63:0] weights,
+    output wire [15:0] av,al,output wire [7:0] wv,wl,
     output reg [3:0] act_rd_ic,act_rd_tap
 );
     reg feeding,rv,rl;
@@ -30,26 +30,38 @@ module data_mapper(
             end
         end
     end
-    genvar lane;
-    generate for(lane=0;lane<8;lane=lane+1) begin: skew
-        reg [7:0] ad[0:lane],wd[0:lane];
-        reg [lane:0] v,l;
+    genvar alane;
+    generate for(alane=0;alane<16;alane=alane+1) begin: a_skew
+        reg [7:0] d[0:alane];
+        reg [alane:0] v,l;
         integer j;
         always @(posedge clk) begin
             if(rst || start) begin
                 v<=0;l<=0;
-                for(j=0;j<=lane;j=j+1) begin ad[j]<=0;wd[j]<=0;end
+                for(j=0;j<=alane;j=j+1) d[j]<=0;
             end else begin
-                ad[0]<=act_data[lane*8+:8];wd[0]<=weight_data[lane*8+:8];
-                v[0]<=rv;l[0]<=rl;
-                for(j=1;j<=lane;j=j+1) begin
-                    ad[j]<=ad[j-1];wd[j]<=wd[j-1];v[j]<=v[j-1];l[j]<=l[j-1];
-                end
+                d[0]<=act_data[alane*8+:8];v[0]<=rv;l[0]<=rl;
+                for(j=1;j<=alane;j=j+1) begin d[j]<=d[j-1];v[j]<=v[j-1];l[j]<=l[j-1];end
             end
         end
-        assign activations[lane*8+:8]=ad[lane];
-        assign weights[lane*8+:8]=wd[lane];
-        assign av[lane]=v[lane];assign wv[lane]=v[lane];
-        assign al[lane]=l[lane];assign wl[lane]=l[lane];
+        assign activations[alane*8+:8]=d[alane];
+        assign av[alane]=v[alane];assign al[alane]=l[alane];
+    end endgenerate
+    genvar wlane;
+    generate for(wlane=0;wlane<8;wlane=wlane+1) begin: w_skew
+        reg [7:0] d[0:wlane];
+        reg [wlane:0] v,l;
+        integer j;
+        always @(posedge clk) begin
+            if(rst || start) begin
+                v<=0;l<=0;
+                for(j=0;j<=wlane;j=j+1) d[j]<=0;
+            end else begin
+                d[0]<=weight_data[wlane*8+:8];v[0]<=rv;l[0]<=rl;
+                for(j=1;j<=wlane;j=j+1) begin d[j]<=d[j-1];v[j]<=v[j-1];l[j]<=l[j-1];end
+            end
+        end
+        assign weights[wlane*8+:8]=d[wlane];
+        assign wv[wlane]=v[wlane];assign wl[wlane]=l[wlane];
     end endgenerate
 endmodule
