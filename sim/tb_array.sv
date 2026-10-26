@@ -6,9 +6,9 @@ module tb_array;
     reg signed [7:0] x[0:143][0:15],wref[0:7][0:143];
     wire [127:0] a;wire [63:0] w;wire [15:0] av,al;wire [7:0] wv,wl;
     wire [4095:0] results;wire done;
-    data_mapper mapper(.clk(clk),.rst(rst),.start(start),.k_count(k_count),.rd_en(re),.rd_addr(addr),
+    data_mapper mapper(.clk(clk),.rst(rst),.start(start),.linear_mode(1'b0),.k_count(k_count),.rd_en(re),.rd_addr(addr),
         .act_data(ad),.weight_data(wd),.activations(a),.weights(w),.av(av),.wv(wv),.al(al),.wl(wl));
-    systolic_array array(.clk(clk),.rst(rst),.clear(start),.activations(a),.weights(w),.av(av),.wv(wv),.al(al),.wl(wl),.results(results),.done(done));
+    systolic_array array(.clk(clk),.rst(rst),.clear(start),.linear_mode(1'b0),.activations(a),.weights(w),.av(av),.wv(wv),.al(al),.wl(wl),.results(results),.done(done));
     integer i,j,k,t,cycles;reg signed [31:0] expected;
     always @(posedge clk) if(re) begin
         for(integer c=0;c<16;c=c+1) ad[c*8+:8]<=x[addr][c];

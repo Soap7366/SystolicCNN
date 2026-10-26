@@ -99,6 +99,8 @@ module activation_tile_buffer(
     input wire clk,wr_en,wr_bank,input wire [3:0] wr_ic,
     input wire [3:0] wr_p,input wire [71:0] wr_top,wr_bottom,
     input wire rd_en,rd_bank,input wire [3:0] rd_ic,rd_tap,
+    input wire linear_wr_en,input wire [3:0] linear_wr_ic,linear_wr_tap,
+    input wire [7:0] linear_wr_data,
     output reg [127:0] rd_data
 );
     // Bank by kernel tap AND spatial lane; the remaining depth is Cin<=16.
@@ -113,7 +115,8 @@ module activation_tile_buffer(
             wire we=wr_en && (wr_p==lane || wr_p+4'd2==lane);
             wire [7:0] d=(wr_p==lane)?wr_top[tap*8+:8]:wr_bottom[tap*8+:8];
             always @(posedge clk) begin
-                if(we && !wr_bank) bank0[wr_ic]<=d;
+                if(linear_wr_en && lane==0 && linear_wr_tap==tap) bank0[linear_wr_ic]<=linear_wr_data;
+                else if(we && !wr_bank) bank0[wr_ic]<=d;
                 if(we && wr_bank) bank1[wr_ic]<=d;
             end
             assign taps0[tap*128+lane*8+:8]=bank0[rd_ic];

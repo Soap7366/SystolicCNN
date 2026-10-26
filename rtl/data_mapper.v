@@ -2,7 +2,7 @@
 // Both tile memories have one synchronous read cycle. rv/rl follow that read.
 // Lane i is delayed i extra clocks: W[r,k] and X[k,c] meet at k+r+c.
 module data_mapper(
-    input wire clk,rst,start,
+    input wire clk,rst,start,linear_mode,
     input wire [7:0] k_count,
     output wire rd_en,
     output wire [7:0] rd_addr,
@@ -40,7 +40,8 @@ module data_mapper(
                 v<=0;l<=0;
                 for(j=0;j<=alane;j=j+1) d[j]<=0;
             end else begin
-                d[0]<=act_data[alane*8+:8];v[0]<=rv;l[0]<=rl;
+                d[0]<=act_data[alane*8+:8];
+                v[0]<=rv && (!linear_mode || alane==0);l[0]<=rl && (!linear_mode || alane==0);
                 for(j=1;j<=alane;j=j+1) begin d[j]<=d[j-1];v[j]<=v[j-1];l[j]<=l[j-1];end
             end
         end
@@ -57,7 +58,8 @@ module data_mapper(
                 v<=0;l<=0;
                 for(j=0;j<=wlane;j=j+1) d[j]<=0;
             end else begin
-                d[0]<=weight_data[wlane*8+:8];v[0]<=rv;l[0]<=rl;
+                d[0]<=weight_data[wlane*8+:8];
+                v[0]<=rv && (!linear_mode || wlane<2);l[0]<=rl && (!linear_mode || wlane<2);
                 for(j=1;j<=wlane;j=j+1) begin d[j]<=d[j-1];v[j]<=v[j-1];l[j]<=l[j-1];end
             end
         end

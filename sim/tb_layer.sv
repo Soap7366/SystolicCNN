@@ -10,6 +10,7 @@ module tb_layer #(
     reg [12:0] cfg_input_base,cfg_output_base,cfg_weight_base;
     reg [5:0] cfg_bias_base,cfg_quant_base;
     wire busy,done,error,host_ready,host_rd_valid;wire [7:0] host_rd_data;
+    wire result_valid;wire signed [31:0] collision_int32,steering_int32;
     reg host_wr_en=0,host_rd_en=0,host_bank=0;
     reg [12:0] host_addr=0;reg [7:0] host_wr_data=0;
     cnn_layer_accelerator #(.WEIGHT_FILE({DATA_DIR,"/weights.hex"}),

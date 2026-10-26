@@ -9,6 +9,7 @@ module tb_timing;
     reg [12:0] cfg_input_base=0,cfg_output_base=0,cfg_weight_base=0;
     reg [5:0] cfg_bias_base=0,cfg_quant_base=0;
     wire busy,done,error,host_ready,host_rd_valid;wire [7:0] host_rd_data;
+    wire result_valid;wire signed [31:0] collision_int32,steering_int32;
     reg host_wr_en=0,host_rd_en=0,host_bank=0;
     reg [12:0] host_addr=0;reg [7:0] host_wr_data=0;
     cnn_layer_accelerator dut(.*);

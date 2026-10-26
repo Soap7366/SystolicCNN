@@ -1,7 +1,11 @@
-# CNN Accelerator — 基准方案单层 Verilog 实现
+# CNN Accelerator — 双任务整网 Verilog 实现
 
-入口模块是 `rtl/cnn_layer_accelerator.v`，由 `cnn_controller` 接收层参数，执行完整的
-**Conv → Bias → INT8 重定标 → ReLU → 2×2 MaxPool → BRAM 写回**。
+当前整网入口为 `rtl/cnn_accelerator.v`，一次 start 自动执行
+**三个 Conv/Bias/重定标/ReLU/Pool → 在线 GAP → 复用阵列的两个 Linear → 两个 INT32 输出**。
+使用 `artifacts_dual_task_baseline2_int8_qat/export` 的完整参数，30个样本全部对齐 golden。
+最新结构、接口、控制验证和资源时序见 [整网实现报告](docs/full_network.md)。
+
+原 `cnn_layer_accelerator.v` 默认保留单层模式；整网 wrapper 启用 `ENABLE_NETWORK=1`。
 
 当前架构为 **8 个输出通道 × 16 个空间位置、四路并行 Post**。
 当前 Prep 已改成按列流式读取，每块 Feature BRAM 分为四个行 bank，同拍返回四行的一列，直接推进滑窗。
@@ -18,25 +22,31 @@
 - `scripts/`：导出、仿真、工程配置、综合及布局布线
 - `build/`：工具日志、报告、DCP、布线网表及 SDF
 
-Vivado 工程 `CNN_Accelerator.xpr` 已设置设计顶层 `cnn_layer_accelerator`、仿真顶层 `tb_layer`。
+Vivado 工程 `CNN_Accelerator.xpr` 已设置设计顶层 `cnn_accelerator`、仿真顶层 `tb_network`。
 原来的空 `top.v` 保留，但不再是工程顶层。
 
 在本目录运行：
 
 ```powershell
+& 'D:\programm\anaconda\envs\vision_attention\python.exe' scripts/export_dual_qat_vectors.py
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_sim.ps1 -Test network
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_sim.ps1 -Test gap
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_sim.ps1 -Test linear
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_sim.ps1 -Test control
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_sim.ps1 -Test array
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_sim.ps1 -Test post
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_sim.ps1 -Test memory
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_sim.ps1 -Test layer
-& 'D:\Vivado\2023.2\bin\vivado.bat' -mode batch -source scripts/implement.tcl -log build/implementation.log -journal build/implementation.jou
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_timing_sim.ps1
+& 'D:\programm\anaconda\envs\vision_attention\python.exe' scripts/capture_network_inputs.py
+& 'D:\Vivado\2023.2\bin\vivado.bat' -mode batch -source scripts/implement_full_network.tcl -log build/full_network/implementation.log -journal build/full_network/implementation.jou
+& 'D:\programm\anaconda\envs\vision_attention\python.exe' scripts/verify_full_network.py
 ```
 
-本次四路 Prep 执行 RTL 回归和新一轮综合布局布线，尚未重跑动态 SDF。
-最后一条可执行 SDF 回标后的首 Tile 检查及 BRAM 读回；添加 `-FullLayer` 可运行耗时较长的完整 Conv1 门级仿真。
-SDF 输入装载采用带地址/数据保护周期的 host 写入，并在计算前核验实际输入；连续引脚级 host 写入问题见验证报告。
-完整层的整数正确性使用上面的 `-Test layer` 验证，实际覆盖 Conv1、Conv2、Conv3 各两个样本。
+完整整网为65116拍，按50 MHz为1.30232 ms，不含host传输和PS反量化。布局布线通过50 MHz时序；20,017 LUT、18,191 FF、6.5 BRAM Tile、20 DSP。
+当前整网尚未执行动态SDF。`run_timing_sim.ps1` 保留为旧单层版本入口，不是当前整网SDF验证。
+host连续引脚级写入的既有验证限制见历史验证报告；本次没有将RTL仿真当成板级接口验证。
+`-Test layer` 是原HNM两样本六层回归；`-Test network` 才是30个QAT样本、GAP和双FC全部由RTL执行的整网验证。
 
 移动工程后，运行 `scripts/configure_project.tcl` 更新 GUI 工程中的参数文件路径。
 命令行仿真脚本自动切回工程目录，不依赖调用位置。
-当前提供的是原生同步配置/存储接口；不包含 AXI、PS 软件、GAP、FC 或可下载到板卡的 bitstream。
+当前提供原生同步输入存储及结果接口，已包含整数GAP和双FC；不包含AXI、PS软件或可下载到板卡的bitstream。

@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 module systolic_array(
-    input wire clk, rst, clear,
+    input wire clk, rst, clear,linear_mode,
     input wire [127:0] activations, input wire [63:0] weights,
     input wire [15:0] av, al, input wire [7:0] wv, wl,
     output wire [4095:0] results,
@@ -32,5 +32,5 @@ module systolic_array(
             end
         end
     endgenerate
-    assign done=pe_done[127];
+    assign done=linear_mode?pe_done[16]:pe_done[127];
 endmodule

@@ -1,4 +1,4 @@
-"""Check and adapt an existing dual-task QAT export to the unchanged CNN RTL.
+"""Check and adapt an existing dual-task QAT export to the CNN/dual-FC RTL.
 
 No training, calibration or quantization is performed here.
 """
@@ -86,6 +86,21 @@ def main():
         multipliers.extend(r['multiplier'] for r in requants)
     assert [x['weight_base'] for x in layers] == [0, 72, 1224]
     assert [x['bias_base'] for x in layers] == [0, 8, 24]
+    for name in ('collision', 'steering'):
+        p = params['layers'][name]
+        w, b = p['weight_int8'], p['bias_int32']
+        assert w.dtype == np.int8 and w.shape == (1, 32)
+        assert b.dtype == np.int32 and b.shape == (1,)
+        assert int(w.min()) >= -127
+        assert int(np.abs(w.astype(np.int64)).sum()*127+abs(int(b[0]))) < 2**31
+        layers.append(dict(name=name, weight_base=len(weights), bias_base=len(biases), weight_shape=[1, 32]))
+        weights.extend(w.ravel());biases.extend(b.ravel())
+    assert layers[3]['weight_base'] == 5832 and layers[4]['weight_base'] == 5864
+    assert layers[3]['bias_base'] == 56 and layers[4]['bias_base'] == 57
+    gap_multiplier, gap_shift = q['requant']['gap']
+    assert gap_shift == 31 and 0 < gap_multiplier < 2**31
+    assert len(multipliers) == 56
+    multipliers.append(gap_multiplier)  # Quant ROM address 56, loaded at network start.
     hexfile(out / 'weights.hex', weights, 8, 8192)
     hexfile(out / 'bias.hex', biases, 32, 64)
     hexfile(out / 'quant.hex', multipliers, 32, 64)
@@ -101,6 +116,9 @@ def main():
             trace_count += 1
         for head in ('collision', 'steering'):
             assert result[head + '_int32'] == int(row[head + '_int32'])
+            hexfile(out / f's{sample}_{head}.hex', result['trace'][head+'_int32'], 32)
+        hexfile(out / f's{sample}_gap_sum.hex', result['trace']['gap_sum_int32'], 32)
+        hexfile(out / f's{sample}_gap.hex', result['trace']['gap_int8'], 8)
         for layer, (ci, co, h) in enumerate(((1, 8, 64), (8, 16, 32), (16, 32, 16)), 1):
             suffixes = dict(input='input_int8' if layer == 1 else f'conv{layer-1}_pool_int8',
                             acc=f'conv{layer}_acc_int32', out=f'conv{layer}_pool_int8')
@@ -111,7 +129,7 @@ def main():
                 assert a.dtype == (np.int32 if kind == 'acc' else np.int8)
                 hexfile(out / f's{sample}_conv{layer}_{kind}.hex', a, 32 if kind == 'acc' else 8)
     manifest = dict(export_root=str(root), samples=rows, layers=layers,
-                    scope='Unchanged RTL Conv/Bias/Requant/ReLU/MaxPool; GAP and dual FC are software only',
+                    scope='Full RTL Conv1/2/3, online GAP and shared-array collision/steering FC',
                     binary_manifest_entries_verified=binary_count, golden_reference_traces_verified=trace_count,
                     rtl_sha256={str(p): sha(p) for p in sorted(Path('rtl').glob('*.v'))},
                     source_sha256={str(p): sha(p) for p in sorted(source_paths)},

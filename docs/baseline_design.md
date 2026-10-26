@@ -1,5 +1,7 @@
 # 基准方案：单层 CNN 卷积引擎
 
+当前完整双任务网络入口及GAP/双FC见 [整网实现报告](full_network.md)。本文描述可复用的卷积子引擎。
+
 实现入口：`rtl/cnn_layer_accelerator.v`。纯 Verilog 可综合 RTL；SystemVerilog 仅用于 testbench。
 目标器件：现有工程的 PYNQ-Z2 / xc7z020clg400-1。计算范围是一层 Conv + Bias + Requant + ReLU + MaxPool。
 同一个引擎支持导出的 Conv1、Conv2、Conv3；GAP、FC 和 PS/AXI 集成不属于本次单层范围。

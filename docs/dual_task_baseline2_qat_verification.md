@@ -1,5 +1,7 @@
 # baseline_2 QAT 双任务 CNN：现有架构兼容性与实际 RTL 验证
 
+> 本文保留“仅CNN主干RTL＋软件GAP/FC”的历史验证。当前已完成GAP和双Linear的整网RTL，最新结果见 [整网实现报告](full_network.md)。
+
 导出来源：`D:\Workspace\FPGA_CNN\artifacts_dual_task_baseline2_int8_qat\export`。
 
 结论：这份模型的三个卷积块可直接使用现有 8×16 阵列、四 bank Feature BRAM 和四路 Post。计算 RTL 没有修改，仅转换已导出整数的存储格式，增加独立参数文件和测试入口。全部 30 个 golden 样本完成实际三层串接并逐项通过。

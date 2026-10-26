@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 module weight_loader(
-    input wire clk,rst,start,input wire [7:0] k_count,
+    input wire clk,rst,start,linear_mode,input wire [7:0] k_count,
     input wire [5:0] oc_base,input wire [12:0] weight_base,
     input wire [5:0] bias_base,quant_base,
     output wire rom_en,output reg [12:0] weight_addr,
@@ -14,7 +14,7 @@ module weight_loader(
     assign rom_en=state==WREQ || state==PREQ;
     wire [12:0] oc={7'd0,oc_base}+lane;
     wire [12:0] oc9=(oc<<3)+oc;
-    wire [12:0] offset=(k_count==9)?oc9:((k_count==72)?(oc9<<3):(oc9<<4));
+    wire [12:0] offset=linear_mode?(oc<<5):((k_count==9)?oc9:((k_count==72)?(oc9<<3):(oc9<<4)));
     assign bias_addr=bias_base+oc_base+lane;
     assign quant_addr=quant_base+oc_base+lane;
     assign wr_en=state==WSTORE;assign wr_lane=lane;assign wr_k=k;assign wr_data=weight_data;
@@ -35,7 +35,7 @@ module weight_loader(
                 PWAIT:state<=PSTORE;
                 PSTORE:begin
                     biases[lane*32+:32]<=bias_data;multipliers[lane*32+:32]<=quant_data;
-                    if(lane==7) begin done<=1;state<=IDLE;end
+                    if(lane==(linear_mode?1:7)) begin done<=1;state<=IDLE;end
                     else begin lane<=lane+1'b1;state<=WADDR;end
                 end
                 default:state<=IDLE;
