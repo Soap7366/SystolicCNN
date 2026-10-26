@@ -4,6 +4,7 @@
 **三个 Conv/Bias/重定标/ReLU/Pool → 在线 GAP → 复用阵列的两个 Linear → 两个 INT32 输出**。
 使用 `artifacts_dual_task_baseline2_int8_qat/export` 的完整参数，30个样本全部对齐 golden。
 最新结构、接口、控制验证和资源时序见 [整网实现报告](docs/full_network.md)。
+资源、吞吐、PE利用率及初步功耗/能效估算见 [性能汇总](docs/performance_summary.md)。
 
 原 `cnn_layer_accelerator.v` 默认保留单层模式；整网 wrapper 启用 `ENABLE_NETWORK=1`。
 
